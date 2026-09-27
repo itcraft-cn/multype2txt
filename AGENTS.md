@@ -31,7 +31,7 @@ CLI (clap)  ->  converter (按扩展名分派)
 | Office 解析 | office_oxide | 六种 Office 格式，纯 Rust |
 | PDF 解析 | pdf_oxide | 文本抽取，页间以换页符分隔 |
 | 错误处理 | thiserror + anyhow | 库内定义 ConvertError，入口统一收口 |
-| 日志 | log + env_logger | 诊断走 stderr，结果走 stdout |
+| 日志 | log + env_logger | 诊断仅写 stderr，默认关闭（error），`-v` 开启；结果写 stdout |
 
 ## 代码结构
 

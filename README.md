@@ -11,7 +11,7 @@
 - 单命令、零配置：`multype2txt -i <文件>` 即得到文本。
 - 覆盖常见办公与电子文档格式，纯 Rust 实现，无 C/C++ 动态库依赖。
 - 结果默认写入标准输出，天然适配管道；`-o` 可落盘为 `.txt`。
-- 诊断信息走日志（stderr），绝不污染标准输出，`multype2txt -i a.pdf | ...` 安全可用。
+- 诊断日志固定写 stderr，默认关闭（仅 error），需要时用 `-v` 开启，绝不会混入标准输出。
 - 扩展名大小写不敏感，并借助文件头签名识别真实格式（例如把 `.xls` 误存为 `.doc` 也能解析）。
 
 ## 支持格式
@@ -63,8 +63,15 @@ multype2txt -i <输入文件> [-o <输出文件>]
 |------|------|
 | `-i, --input <FILE>` | 必填。输入文档路径。 |
 | `-o, --output <FILE>` | 可选。输出文本文件路径；缺省时写入标准输出。 |
+| `-v, --verbose` | 可选。打开诊断日志：`-v` 为 info，`-vv` 为 debug。 |
 | `-h, --help` | 打印帮助。 |
 | `-V, --version` | 打印版本。 |
+
+### 日志与数据隔离
+
+- 转换结果只出现在标准输出（或 `-o` 指定的文件）中。
+- 诊断日志始终写 stderr，且默认只输出 error；`-v` 逐级放宽到 info/debug。
+- 为避免外部环境误开日志，程序不读取 `RUST_LOG`；日志级别完全由 `-v` 控制。
 
 ### 示例
 
@@ -83,8 +90,8 @@ for f in docs/*.docx; do
     multype2txt -i "$f" -o "${f%.docx}.txt"
 done
 
-# 需要排查问题时打开日志
-RUST_LOG=info multype2txt -i report.pdf -o report.txt
+# 需要排查问题时打开诊断日志（写 stderr，不影响结果）
+multype2txt -v -i report.pdf -o report.txt
 ```
 
 ### 退出码
