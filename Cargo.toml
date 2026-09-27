@@ -1,10 +1,10 @@
 [package]
 name = "multype2txt"
-version = "0.1.0"
+version = "0.1.0" # managed by updgitver
 edition = "2021"
-authors = ["Helly Guo"]
-license = "MIT"
-description = "将 Office（DOC/DOCX/XLS/XLSX/PPT/PPTX）与 PDF 文档转换为纯文本的命令行工具"
+authors = ["Helly Guo <hellyguo@foxmail.com>"]
+license = "Apache-2.0"
+description = "Command-line tool for converting office (doc/docx/xls/xlsx/PPT/pptx) and PDF documents into plain text."
 keywords = ["office", "pdf", "text", "cli", "converter"]
 categories = ["command-line-utilities", "text-processing"]
 
