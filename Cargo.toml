@@ -1,6 +1,6 @@
 [package]
 name = "multype2txt"
-version = "0.1.0" # managed by updgitver
+version = "0.2.0-dev" # managed by updgitver
 edition = "2021"
 authors = ["Helly Guo <hellyguo@foxmail.com>"]
 license = "Apache-2.0"
