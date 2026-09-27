@@ -1,0 +1,35 @@
+[package]
+name = "multype2txt"
+version = "0.1.0"
+edition = "2021"
+authors = ["Helly Guo"]
+license = "MIT"
+description = "将 Office（DOC/DOCX/XLS/XLSX/PPT/PPTX）与 PDF 文档转换为纯文本的命令行工具"
+keywords = ["office", "pdf", "text", "cli", "converter"]
+categories = ["command-line-utilities", "text-processing"]
+
+[[bin]]
+name = "multype2txt"
+path = "src/main.rs"
+
+[dependencies]
+# 命令行参数解析
+clap = { version = "4", features = ["derive"] }
+# 统一的错误类型定义与传播
+anyhow = "1"
+thiserror = "2"
+# 日志：诊断信息走日志（stderr），转换结果走 stdout/输出文件
+log = "0.4"
+env_logger = "0.11"
+# Office 文档解析（doc/docx/xls/xlsx/ppt/pptx），纯 Rust，无 C/C++ 依赖
+# 精确锁定版本：pdf_oxide 依赖 office_oxide 的 IR 类型，二者版本必须配套，
+# 否则 pdf_oxide 编译时会因 DocumentIR 字段变化而失败。
+office_oxide = "=0.1.3"
+# PDF 文本提取，纯 Rust（与 office_oxide 0.1.3 配套）
+pdf_oxide = "=0.3.73"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

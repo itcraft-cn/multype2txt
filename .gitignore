@@ -1,0 +1,25 @@
+# Rust
+/target/
+**/*.rs.bk
+*.db
+
+# 日志与运行产物
+*.log
+/output/
+/downloads/
+
+# 环境与密钥
+.env
+.env.*
+*.apikey
+
+# 记忆文件（本地保留，不入库）
+MEMORY.md
+
+# 编辑器/系统
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
