@@ -131,4 +131,4 @@ cargo test
 
 ## 许可
 
-MIT，详见 [LICENSE](LICENSE)。
+Apache License 2.0，详见 [LICENSE](LICENSE)。
