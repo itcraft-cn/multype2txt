@@ -28,4 +28,34 @@ pub enum ConvertError {
     /// PDF 文档解析失败，携带底层库的原始错误。
     #[error("PDF 解析失败: {0}")]
     Pdf(#[from] pdf_oxide::Error),
+
+    /// 请求的输出格式与输入不兼容（例如对 PDF 要 CSV、对文档要 CSV）。
+    ///
+    /// 刻意选择报错而非「尽力降级」：降级会让调用方以为拿到了目标格式的
+    /// 数据，实际却是别的东西，属于最危险的静默失败。
+    #[error("无法以 {format} 格式输出: {detail}")]
+    IncompatibleOutput {
+        /// 被拒绝的输出格式名。
+        format: String,
+        /// 不兼容的具体原因。
+        detail: String,
+    },
+
+    /// 工作表下标越界（底层文档结构与预期不符）。
+    #[error("工作表下标越界: index={index}, 共 {count} 张")]
+    SheetOutOfRange {
+        /// 请求的下标。
+        index: usize,
+        /// 实际工作表数量。
+        count: usize,
+    },
+
+    /// 图片字节导出失败（`--images-dir` 指定后无法写入）。
+    #[error("导出图片到 {path} 失败: {message}")]
+    ImageExport {
+        /// 目标路径（目录或具体文件）。
+        path: String,
+        /// 底层 I/O 错误描述。
+        message: String,
+    },
 }

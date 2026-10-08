@@ -1,30 +1,49 @@
 # multype2txt
 
-将 Office 与 PDF 文档转换为纯文本的命令行工具。
+将 Office 与 PDF 文档转换为文本的命令行工具。
 
-聚焦“文档 -> 纯文本”这一条最核心的链路，便于在脚本、管道与批处理场景中独立使用。
+按输入格式自动选择输出形态：**Word 转 Markdown、Excel 转 CSV、PPT 转结构+文字、PDF 转纯文本**。
+同一条链路既能在脚本与管道中独立使用，也能作为库被其他程序复用。
 
-核心目的是便于 AI 读取这些文档，节约 token 消耗。
+核心目的是便于 AI 读取这些文档：结构用来替代猜测，全量抽取用来替代猜测性的省略。
+
+## 三条产品线
+
+| 输入 | 默认输出 | 说明 |
+|------|----------|------|
+| `.doc` / `.docx` | Markdown | 标题、列表、表格、超链接、脚注保留为 Markdown 语法；图片只留占位符 |
+| `.xls` / `.xlsx` | CSV | **全量**抽取单元格计算值，多工作表以注释行分隔；图片完全忽略、不留占位 |
+| `.ppt` / `.pptx` | Markdown | 幻灯片页、标题、列表层级、演讲者备注；图片只留占位符 |
+| `.pdf` | 纯文本 | 按阅读顺序抽取正文，页间插入换页符（`U+000C`） |
+
+设计取舍：
+
+- **全量抽取，不做略读。** 是否采样、截断、摘要属于阅读方（LLM）的职责，转换器只负责把内容完整交出去——一旦在这里省略，后续任何环节都无法找回。
+- **图我们不碰，这是本工具的明确局限。** 占位符只回答「这里有一张图」「它叫什么」，不解析图片内容；需要时用 `--images-dir` 把字节另存为文件，由阅读方自行决定是否读图。
+- **结构是还原出来的，不是推断出来的。** docx/xlsx/pptx 本身是声明式结构，解析即可还原；凡是需要靠启发式猜的地方，宁可不猜。
+- **不兼容就报错，不静默降级。** 对 PDF 要 CSV、对文档要 CSV 都会直接失败退出，避免拿到一份「看起来像、其实不是」的数据。
 
 ## 特性
 
-- 单命令、零配置：`multype2txt -i <文件>` 即得到文本。
+- 单命令、零配置：`multype2txt -i <文件>` 即得到对应格式的文本。
 - 覆盖常见办公与电子文档格式，纯 Rust 实现，无 C/C++ 动态库依赖。
-- 结果默认写入标准输出，天然适配管道；`-o` 可落盘为 `.txt`。
+- 结果默认写入标准输出，天然适配管道；`-o` 可落盘。
+- `-f` 可覆盖自动映射（`-f text` 退回纯文本）。
 - 诊断日志固定写 stderr，默认关闭（仅 error），需要时用 `-v` 开启，绝不会混入标准输出。
 - 扩展名大小写不敏感，并借助文件头签名识别真实格式（例如把 `.xls` 误存为 `.doc` 也能解析）。
+- 下游提前关闭管道（`| head`）视为正常结束，不报错、退出码为 `0`。
 
 ## 支持格式
 
-| 格式 | 扩展名 | 解析库 |
-|------|--------|--------|
-| Word（OOXML） | `.docx` | office_oxide |
-| Word（二进制） | `.doc` | office_oxide |
-| PowerPoint（OOXML） | `.pptx` | office_oxide |
-| PowerPoint（二进制） | `.ppt` | office_oxide |
-| Excel（OOXML） | `.xlsx` | office_oxide |
-| Excel（二进制） | `.xls` | office_oxide |
-| PDF | `.pdf` | pdf_oxide |
+| 格式 | 扩展名 | 默认输出 | 解析库 |
+|------|--------|----------|--------|
+| Word（OOXML） | `.docx` | Markdown | office_oxide |
+| Word（二进制） | `.doc` | Markdown | office_oxide |
+| PowerPoint（OOXML） | `.pptx` | Markdown | office_oxide |
+| PowerPoint（二进制） | `.ppt` | Markdown | office_oxide |
+| Excel（OOXML） | `.xlsx` | CSV | office_oxide |
+| Excel（二进制） | `.xls` | CSV | office_oxide |
+| PDF | `.pdf` | 纯文本 | pdf_oxide |
 
 说明：
 
@@ -32,6 +51,30 @@
 - 加密的 OOXML 文档（受密码保护）不支持解密，会给出明确错误。
 - PDF 按页面阅读顺序抽取正文，页与页之间插入换页符（`U+000C` / `\f`），
   以保留分页边界；在普通文本查看器中表现为分页，不产生可见的标记文本。
+
+### CSV 的约定
+
+多工作表无法用一个 CSV 表达，因此以 `#` 注释行分隔并附元信息：
+
+```text
+# sheet: 销售明细  rows=1200 cols=8  merged=2
+# merged: A1:C1
+日期,产品,数量,金额
+2024-05-01,甲,3,120
+```
+
+- `#` 开头的行是**元信息，不是数据**；严格的 CSV 解析器需自行跳过。
+- 数据区遵循 RFC 4180 转义；列按整表最大列数对齐，中间空行按真实行号补齐。
+- 单元格只导出**计算结果**：日期为 ISO 8601，错误值为 `#REF!` 等原文，布尔为 `TRUE`/`FALSE`。
+- `.xls`（BIFF8）的解析未保留合并单元格，该格式不输出 `# merged` 行。
+
+### 已知局限
+
+- **不解析图片内容**，仅占位（`--images-dir` 可把字节落盘）。
+- **`.xlsb` 不支持**：依赖的 `rxlsb` 存在列号丢弃、公式值丢失等数据正确性缺陷，
+  在修复前宁可拒绝也不产出错位的数据。
+- PDF 只有文字流，无结构可还原，因此 `-f markdown/csv` 对 PDF 一律报错。
+- 图表（chart）数据不导出——它属于「图」，不在本工具的处理范围内。
 
 ## 安装与构建
 
@@ -54,7 +97,7 @@ cargo run -- -i samples/demo.docx
 ## 用法
 
 ```text
-multype2txt -i <输入文件> [-o <输出文件>]
+multype2txt -i <输入文件> [-o <输出文件>] [-f <格式>] [--images-dir <目录>]
 ```
 
 ### 参数
@@ -62,7 +105,9 @@ multype2txt -i <输入文件> [-o <输出文件>]
 | 参数 | 说明 |
 |------|------|
 | `-i, --input <FILE>` | 必填。输入文档路径。 |
-| `-o, --output <FILE>` | 可选。输出文本文件路径；缺省时写入标准输出。 |
+| `-o, --output <FILE>` | 可选。输出文件路径；缺省时写入标准输出。 |
+| `-f, --format <FMT>` | 可选。`auto`（默认，按输入类型决定）/ `markdown` / `csv` / `text`。 |
+| `--images-dir <DIR>` | 可选。把图片字节导出到该目录，占位符 URL 指向实际文件。仅 Markdown 输出有效。 |
 | `-v, --verbose` | 可选。打开诊断日志：`-v` 为 info，`-vv` 为 debug。 |
 | `-h, --help` | 打印帮助。 |
 | `-V, --version` | 打印版本。 |
@@ -76,18 +121,27 @@ multype2txt -i <输入文件> [-o <输出文件>]
 ### 示例
 
 ```bash
-# 输出到标准输出
-multype2txt -i report.pdf
+# docx 输出 Markdown 到标准输出
+multype2txt -i report.docx
+
+# xlsx 输出 CSV 到标准输出
+multype2txt -i sheet.xlsx
 
 # 输出到文件
-multype2txt -i report.docx -o report.txt
+multype2txt -i report.docx -o report.md
+
+# 退回纯文本（丢弃全部结构）
+multype2txt -f text -i report.docx -o report.txt
+
+# 图片字节另存，占位符指向真实文件
+multype2txt --images-dir report-imgs -i report.docx -o report.md
 
 # 接入管道（结果与诊断分离）
 multype2txt -i annual.pptx | head -n 50
 
 # 批量转换
 for f in docs/*.docx; do
-    multype2txt -i "$f" -o "${f%.docx}.txt"
+    multype2txt -i "$f" -o "${f%.docx}.md"
 done
 
 # 需要排查问题时打开诊断日志（写 stderr，不影响结果）
@@ -98,8 +152,8 @@ multype2txt -v -i report.pdf -o report.txt
 
 | 退出码 | 含义 |
 |--------|------|
-| `0` | 转换成功 |
-| `1` | 转换失败（格式不支持、文件损坏、写入失败等） |
+| `0` | 转换成功，或下游提前关闭管道（`| head`） |
+| `1` | 转换失败（格式不支持、输入输出格式不兼容、文件损坏、写入失败等） |
 | `2` | 命令行参数错误 |
 
 ## 项目结构
@@ -107,19 +161,26 @@ multype2txt -v -i report.pdf -o report.txt
 ```text
 src/
   main.rs              # 命令行入口：参数解析、输出分发、退出码
-  lib.rs               # 库入口，对外导出 convert_file / is_supported
+  lib.rs               # 库入口，对外导出 convert_file / convert_with 等
   error.rs             # ConvertError：统一的错误类型
+  output.rs            # OutputFormat / ConvertOptions / ImagePolicy
   converter/
-    mod.rs             # 按扩展名分派到具体解析器
-    office.rs          # Office 六种格式 -> 文本
-    pdf.rs             # PDF -> 文本
+    mod.rs             # 按扩展名分派，选择目标输出格式
+    office.rs          # Office 六种格式 -> 打开文档后交给渲染层
+    pdf.rs             # PDF -> 纯文本
+  render/
+    mod.rs             # DocumentRenderer trait + 渲染器工厂 + 纯文本实现
+    markdown.rs        # 自研 IR -> Markdown 渲染器
+    grid.rs            # SheetSource trait + xlsx/xls 网格适配 + CSV 序列化
 tests/
-  convert.rs           # 针对 samples/ 的端到端转换测试
+  convert.rs           # 针对 samples/ 的端到端测试（链路 + 分派 + 报错 + 图片导出）
+examples/
+  structure_probe.rs   # 结构还原探针：量化纯文本与结构化输出的差距
 samples/               # 随附的小体积样例文档
 ```
 
-设计上刻意保持扁平：`converter` 只依赖底层解析库，错误集中到 `ConvertError`，
-命令行层只负责 I/O 与退出码，便于作为库被其他程序复用。
+解析与渲染分离：`converter` 只负责打开文档并选定目标格式，`render` 负责产出文本。
+新增一种输出格式只需实现 `DocumentRenderer` 并在工厂里加一个分支，分派逻辑完全不用改。
 
 ## 开发
 
