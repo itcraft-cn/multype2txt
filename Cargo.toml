@@ -26,6 +26,13 @@ env_logger = "0.11"
 # Office 文档解析（doc/docx/xls/xlsx/ppt/pptx），纯 Rust，无 C/C++ 依赖
 # 精确锁定版本：pdf_oxide 依赖 office_oxide 的 IR 类型，二者版本必须配套，
 # 否则 pdf_oxide 编译时会因 DocumentIR 字段变化而失败。
+#
+# 不得升级到 0.1.12+（2026-10-09 实测）：那批版本虽修复了 xls 的 SST CONTINUE
+# 错位，却同时新增了 DocumentIR.defined_names 字段，而 pdf_oxide 0.3.73 ~ 0.3.78
+# 构造 IR 时一律没填该字段，全部编译失败（E0063）；0.1.4 ~ 0.1.11 又不含该修复
+# （SST 修复与 defined_names 是 0.1.12 同批引入的，中间没有可用窗口）。
+# 要消除 xls 乱码必须 fork office_oxide 或 pdf_oxide 之一，已评估后放弃，
+# 改为文档化建议使用者先转 xlsx（见 README「xls 的 SST 缺陷」）。
 office_oxide = "=0.1.3"
 # PDF 文本提取，纯 Rust（与 office_oxide 0.1.3 配套）
 pdf_oxide = "=0.3.73"
