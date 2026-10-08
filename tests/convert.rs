@@ -169,6 +169,39 @@ fn images_dir_exports_bytes_and_points_to_them() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// PDF 的 `--images-dir` 必须跑通且不破坏正文。
+///
+/// 样例 PDF 有 15 张内联图，底层库对这类图可能拒绝解码（缺 `/ColorSpace`）。
+/// 因此这里只锁两件事：页边界不因追加占位符而改变；图片无论导出成功还是
+/// 失败，都必须在页末留下痕迹——静默无痕会让阅读方以为文档里本来没有图。
+#[test]
+fn pdf_images_dir_keeps_full_text_and_marks_images() {
+    let dir = std::env::temp_dir().join(format!("multype2txt-pdf-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let options = ConvertOptions::new().with_images(ImagePolicy::Export {
+        dir: dir.clone(),
+        url_prefix: dir.to_string_lossy().to_string(),
+    });
+    let text = convert_with(&sample("demo.pdf"), &options)
+        .unwrap_or_else(|e| panic!("带图片导出的 PDF 转换失败: {e}"));
+
+    assert_eq!(text.split('\x0C').count(), 42, "追加占位符不应改变页边界");
+    assert!(
+        text.contains("图片"),
+        "样例 PDF 含 15 张图，页末应有占位符或导出失败说明，实际输出末尾 300 字: {}",
+        text.chars()
+            .rev()
+            .take(300)
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect::<String>()
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ---------------------------------------------------------------------------
 // 支持范围
 // ---------------------------------------------------------------------------

@@ -38,6 +38,7 @@
 
 pub mod converter;
 pub mod error;
+mod image;
 pub mod output;
 pub mod render;
 

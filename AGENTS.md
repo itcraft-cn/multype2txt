@@ -20,7 +20,7 @@
 | doc/docx | Markdown | 图片留占位符，有描述则填入占位符 |
 | xls/xlsx | CSV，必须全量 | 图片完全忽略、不留占位符 |
 | ppt/pptx | 结构 + 文字，仅此而已 | 不碰图 |
-| pdf | 纯文本 | 无结构可还原，`-f markdown/csv` 一律报错 |
+| pdf | 纯文本 | 无结构可还原，`-f markdown/csv` 一律报错；`--images-dir` 可按页导出图片 |
 
 **图我们不碰，这是本工具的明确局限。** `--images-dir` 可把图片字节另存，
 供具备读图能力的调用方自取，但工具本身绝不解析图片内容。
@@ -30,7 +30,7 @@
 ```
 CLI (clap)  ->  converter (按扩展名分派 + 选目标格式)
                  |-- office_oxide  -> Document -> IR / 原生网格
-                 `-- pdf_oxide     -> PDF 文本流
+                 `-- pdf_oxide     -> PDF 文本流（页间 \x0C）+ 按页抽图
                          |
                     render (DocumentRenderer trait)
                      |-- markdown.rs   IR -> Markdown（自研）
@@ -51,7 +51,7 @@ CLI (clap)  ->  converter (按扩展名分派 + 选目标格式)
 | 命令行层 | Rust + clap | 参数解析、输出分发、退出码 |
 | 分派层 | converter | 依据扩展名选解析器与默认格式，扩展名大小写不敏感 |
 | Office 解析 | office_oxide | 六种 Office 格式，纯 Rust |
-| PDF 解析 | pdf_oxide | 文本抽取，页间以换页符分隔 |
+| PDF 解析 | pdf_oxide | 文本抽取，页间以换页符分隔；可按页抽图（走 `page_image_handles`） |
 | 渲染层 | 自研 | `DocumentRenderer` trait，Markdown / CSV / 纯文本三个实现 |
 | 网格层 | `SheetSource` trait | xlsx 与 xls 各一个适配，CSV 序列化只写一次 |
 | 错误处理 | thiserror + anyhow | 库内定义 ConvertError，入口统一收口 |
@@ -66,7 +66,8 @@ src/error.rs           ConvertError
 src/output.rs          OutputFormat / ConvertOptions / ImagePolicy
 src/converter/mod.rs   格式分派与默认输出映射
 src/converter/office.rs
-src/converter/pdf.rs
+src/converter/pdf.rs   PDF 文本抽取 + 按页图片导出（页末追加占位符）
+src/image.rs           图片落盘公共约定（命名/扩展名魔数/URL 拼接），Office 与 PDF 共用
 src/render/mod.rs      DocumentRenderer trait + 工厂 + 纯文本实现
 src/render/markdown.rs 自研 IR -> Markdown 渲染器
 src/render/grid.rs     SheetSource trait + xlsx/xls 适配 + CSV 序列化
@@ -85,6 +86,11 @@ samples/               样例文档
   图片导出失败时返回 `ImageExport`，都不得悄悄降级。
 - **有序列表按真实序号递增**，相邻同样式片段先合并再包裹强调标记，
   这是自研渲染器而非直接调用库 `to_markdown()` 的根本原因。
+- **PDF 图片走 `page_image_handles` 而非 `extract_images`**：后者对内联图
+  （`BI...ID...EI`）未补 `/Subtype` 会报错并被底层吞掉，整页表现为无图。
+  页对齐依赖 `extract_all_text` 的分段数恒等于 `page_count`（Rust 字面量
+  写 `'\x0C'`，没有 `\f` 转义）；单张图失败只标注不中断，目录不可写等
+  整体性失败仍返回 `ImageExport`。
 
 ## AI guide
 

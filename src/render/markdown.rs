@@ -32,6 +32,7 @@ use office_oxide::ir::{
 };
 
 use crate::error::ConvertError;
+use crate::image::{join_url, write_image_bytes};
 use crate::output::{ImagePolicy, OutputFormat};
 use crate::render::{DocumentRenderer, Source};
 
@@ -654,6 +655,9 @@ fn render_image(image: &Image, state: &mut State<'_>) -> Result<String, ConvertE
 }
 
 /// 把图片字节写入目标目录，返回生成的文件名。
+///
+/// 命名、扩展名识别与落盘细节统一在 [`crate::image`]，与 PDF 输出共用——
+/// 同一个 `--images-dir` 不该有两套文件命名规则。
 fn export_image(dir: &Path, sequence: usize, image: &Image) -> Result<String, ConvertError> {
     let bytes = image
         .data
@@ -664,63 +668,7 @@ fn export_image(dir: &Path, sequence: usize, image: &Image) -> Result<String, Co
             message: "文档未提供图片字节".to_string(),
         })?;
 
-    std::fs::create_dir_all(dir).map_err(|error| ConvertError::ImageExport {
-        path: dir.display().to_string(),
-        message: error.to_string(),
-    })?;
-
-    let file_name = format!("img-{sequence:04}.{}", sniff_image_extension(bytes));
-    let target = dir.join(&file_name);
-    std::fs::write(&target, bytes).map_err(|error| ConvertError::ImageExport {
-        path: target.display().to_string(),
-        message: error.to_string(),
-    })?;
-
-    Ok(file_name)
-}
-
-/// 拼接占位符 URL 与文件名，避免出现双斜杠。
-fn join_url(prefix: &str, file_name: &str) -> String {
-    if prefix.is_empty() {
-        file_name.to_string()
-    } else if prefix.ends_with('/') {
-        format!("{prefix}{file_name}")
-    } else {
-        format!("{prefix}/{file_name}")
-    }
-}
-
-/// 按魔数识别图片扩展名，识别不出时用 `bin`。
-///
-/// 不依赖底层库的 `ImageFormat`：Office 文档里的 EMF/WMF/EMF+ 等图元格式
-/// 库未必枚举得到，而魔数是文件本身给出的事实。
-fn sniff_image_extension(bytes: &[u8]) -> &'static str {
-    if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
-        "png"
-    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
-        "jpg"
-    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
-        "gif"
-    } else if bytes.starts_with(b"BM") {
-        "bmp"
-    } else if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
-        "webp"
-    } else if bytes.starts_with(&[0x01, 0x00, 0x00, 0x00]) {
-        "emf"
-    } else if bytes.starts_with(&[0xD7, 0xCD, 0xC6, 0x9A]) {
-        "wmf"
-    } else if contains_svg_marker(bytes) {
-        "svg"
-    } else {
-        "bin"
-    }
-}
-
-/// 粗略判断字节流是否为 SVG（XML 声明或根元素）。
-fn contains_svg_marker(bytes: &[u8]) -> bool {
-    let head = &bytes[..bytes.len().min(1024)];
-    let text = String::from_utf8_lossy(head).to_ascii_lowercase();
-    text.contains("<svg")
+    write_image_bytes(dir, sequence, bytes)
 }
 
 #[cfg(test)]
@@ -859,25 +807,6 @@ mod tests {
         let mut state = state_with(&policy);
         let out = render_image(&image, &mut state).expect("抑制渲染不应失败");
         assert!(out.is_empty());
-    }
-
-    #[test]
-    fn sniff_extension_recognizes_common_formats() {
-        assert_eq!(
-            sniff_image_extension(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]),
-            "png"
-        );
-        assert_eq!(sniff_image_extension(&[0xFF, 0xD8, 0xFF, 0xE0]), "jpg");
-        assert_eq!(sniff_image_extension(b"BM0000"), "bmp");
-        assert_eq!(sniff_image_extension(b"<svg xmlns=\"x\">"), "svg");
-        assert_eq!(sniff_image_extension(&[0x00, 0x01, 0x02]), "bin");
-    }
-
-    #[test]
-    fn join_url_avoids_double_slash() {
-        assert_eq!(join_url("imgs", "a.png"), "imgs/a.png");
-        assert_eq!(join_url("imgs/", "a.png"), "imgs/a.png");
-        assert_eq!(join_url("", "a.png"), "a.png");
     }
 
     #[test]

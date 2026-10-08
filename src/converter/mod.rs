@@ -78,7 +78,7 @@ pub fn convert_with(path: &Path, options: &ConvertOptions) -> Result<String, Con
                     detail: "PDF 只能提取纯文本".to_string(),
                 });
             }
-            pdf::extract(path)
+            pdf::extract(path, options)
         }
         other => Err(ConvertError::UnsupportedFormat {
             ext: other.to_string(),

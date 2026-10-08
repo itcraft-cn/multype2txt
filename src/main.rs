@@ -136,30 +136,38 @@ fn run(cli: &Cli) -> anyhow::Result<()> {
 
 /// 把命令行参数翻译成转换选项。
 ///
-/// `--images-dir` 只在 Markdown 输出下有意义，因此这里先判定最终会产出的
-/// 格式（显式 `-f` 优先，否则按扩展名推默认值），不匹配就直接报错退出——
-/// 静默忽略会让调用方以为图片已经落盘。
+/// `--images-dir` 只在两种组合下真正生效：Markdown 输出（Office 文档的 IR
+/// 携带图片与位置）与 PDF 输入（按页扫描内容流抽图，挂在页末）。因此这里
+/// 先判定最终会产出的格式（显式 `-f` 优先，否则按扩展名推默认值），不匹配
+/// 就直接报错退出——静默忽略会让调用方以为图片已经落盘。
 fn build_options(cli: &Cli) -> anyhow::Result<ConvertOptions> {
     let mut options = ConvertOptions::new();
 
     let requested = OutputFormat::parse(&cli.format).map_err(|error| anyhow::anyhow!("{error}"))?;
 
+    let extension = cli
+        .input
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase());
+    let is_pdf = extension.as_deref() == Some("pdf");
+
     if cli.images_dir.is_some() {
         let effective = match requested {
             Some(format) => Some(format),
-            None => cli
-                .input
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .map(|ext| ext.to_ascii_lowercase())
-                .and_then(|ext| default_format(&ext)),
+            None => extension.as_deref().and_then(default_format),
         };
+        // PDF 的文字流没有图片落点，但仍可按页抽图，因此放开 Text 输出；
+        // Office 的 Text 输出丢掉了全部结构，图片无处可挂，依旧拒绝。
         if let Some(format) = effective {
-            if !matches!(format, OutputFormat::Markdown) {
+            let supported = matches!(format, OutputFormat::Markdown)
+                || (is_pdf && matches!(format, OutputFormat::Text));
+            if !supported {
                 anyhow::bail!(
-                    "--images-dir 只对 Markdown 输出有效，而当前输出格式是 {}；\n  \
-                     请去掉 --images-dir，或加上 -f markdown",
-                    format.name()
+                    "--images-dir 只对 Markdown 输出与 PDF 输入有效，而当前组合是 \
+                     `-f {}` + `{}`；\n  请去掉 --images-dir，或换成受支持的组合",
+                    format.name(),
+                    extension.as_deref().unwrap_or("未知格式")
                 );
             }
         }
