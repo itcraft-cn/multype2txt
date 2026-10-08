@@ -11,9 +11,11 @@
 
 | 输入 | 默认输出 | 说明 |
 |------|----------|------|
-| `.doc` / `.docx` | Markdown | 标题、列表、表格、超链接、脚注保留为 Markdown 语法；图片只留占位符 |
-| `.xls` / `.xlsx` | CSV | **全量**抽取单元格计算值，多工作表以注释行分隔；图片完全忽略、不留占位 |
-| `.ppt` / `.pptx` | Markdown | 幻灯片页、标题、列表层级、演讲者备注；图片只留占位符 |
+| `.docx` | Markdown | 标题、列表、表格、超链接、脚注保留为 Markdown 语法；图片只留占位符 |
+| `.doc` | Markdown | **尽力支持**：只有文字与大致标题，列表/表格/样式/图片均无，见 [legacy 二进制格式的局限](#legacy-二进制格式的局限) |
+| `.xlsx` / `.xls` | CSV | **全量**抽取单元格计算值，多工作表以注释行分隔；图片完全忽略、不留占位 |
+| `.pptx` | Markdown | 幻灯片页、标题、列表层级、演讲者备注；图片只留占位符 |
+| `.ppt` | Markdown | **尽力支持**：页与标题保留，列表层级全部丢失，见同上 |
 | `.pdf` | 纯文本 | 按阅读顺序抽取正文，页间插入换页符（`U+000C`） |
 
 设计取舍：
@@ -32,6 +34,8 @@
 - 诊断日志固定写 stderr，默认关闭（仅 error），需要时用 `-v` 开启，绝不会混入标准输出。
 - 扩展名大小写不敏感，并借助文件头签名识别真实格式（例如把 `.xls` 误存为 `.doc` 也能解析）。
 - 下游提前关闭管道（`| head`）视为正常结束，不报错、退出码为 `0`。
+- 对 legacy 二进制格式（`.doc` / `.ppt`）做**最大努力支持**：能转出文字与大致标题，
+  但结构弱于 OOXML，详见 [legacy 二进制格式的局限](#legacy-二进制格式的局限)。
 
 ## 支持格式
 
@@ -52,6 +56,42 @@
 - PDF 按页面阅读顺序抽取正文，页与页之间插入换页符（`U+000C` / `\f`），
   以保留分页边界；在普通文本查看器中表现为分页，不产生可见的标记文本。
 
+### legacy 二进制格式的局限
+
+`.doc` / `.ppt` 是二进制流式格式，与 OOXML 的声明式结构不同：底层库对它们只抽取
+**文字流**，不解析格式记录（粗体、编号、列表层级、表格、图片锚点），
+结构由逐行启发式重建。因此同一份内容两种格式的输出完整度差距明显：
+
+| 输入 | 标题行 | 列表行 | 结构合计 |
+|------|--------|--------|----------|
+| `samples/demo.doc` | 1 | 0 | 1 |
+| `samples/demo.docx` | 7 | 34 | 41 |
+| `samples/demo.ppt` | 26 | 0 | 26 |
+| `samples/demo.pptx` | 26 | 12 | 38 |
+
+具体表现：
+
+- **`.doc`**：正文只剩段落，「目录」「卷一·自然概貌」这类层级不会被识别为标题或列表；
+  只有首行短句按启发式判为一级标题。
+- **`.ppt`**：页标题保留（底层读取了占位符类型），但**列表层级全部丢失**，
+  项目符号退化为独立的 `*` 字符行或斜体文本。
+- **`.xls`**：不受影响——CSV 走原生网格读取，绕开 IR 的启发式取舍，数据仍全量对齐。
+
+**推荐先转成 `.docx` / `.pptx` 再交给本工具**，转换后列表、表格、粗体与图片占位符
+都会完整还原：
+
+```bash
+# Word / PowerPoint 的「另存为」即可；批量可用 LibreOffice
+libreoffice --headless --convert-to docx --outdir out/ legacy.doc
+libreoffice --headless --convert-to pptx --outdir out/ legacy.ppt
+
+multype2txt -i out/legacy.docx -o legacy.md
+```
+
+`--images-dir` 同样只对 OOXML 生效：`.doc` / `.ppt` 的图片字节虽能被底层抽出，
+但 IR 不携带位置与描述，无法在正文定位，因此**既不导出也不报错**——
+这是当前「最大努力支持」范围内的既定行为，而非可依赖的图片导出路径。
+
 ### CSV 的约定
 
 多工作表无法用一个 CSV 表达，因此以 `#` 注释行分隔并附元信息：
@@ -71,6 +111,8 @@
 ### 已知局限
 
 - **不解析图片内容**，仅占位（`--images-dir` 可把字节落盘）。
+- `--images-dir` 对 `.doc` / `.ppt` 不生效：不导出文件，也不报错，
+  原因见 [legacy 二进制格式的局限](#legacy-二进制格式的局限)。
 - **`.xlsb` 不支持**：依赖的 `rxlsb` 存在列号丢弃、公式值丢失等数据正确性缺陷，
   在修复前宁可拒绝也不产出错位的数据。
 - PDF 只有文字流，无结构可还原，因此 `-f markdown/csv` 对 PDF 一律报错。
@@ -107,7 +149,7 @@ multype2txt -i <输入文件> [-o <输出文件>] [-f <格式>] [--images-dir <�
 | `-i, --input <FILE>` | 必填。输入文档路径。 |
 | `-o, --output <FILE>` | 可选。输出文件路径；缺省时写入标准输出。 |
 | `-f, --format <FMT>` | 可选。`auto`（默认，按输入类型决定）/ `markdown` / `csv` / `text`。 |
-| `--images-dir <DIR>` | 可选。把图片字节导出到该目录，占位符 URL 指向实际文件。仅 Markdown 输出有效。 |
+| `--images-dir <DIR>` | 可选。把图片字节导出到该目录，占位符 URL 指向实际文件。仅 Markdown 输出且仅 `.docx` / `.pptx` 输入有效，其余组合会报错或不生效。 |
 | `-v, --verbose` | 可选。打开诊断日志：`-v` 为 info，`-vv` 为 debug。 |
 | `-h, --help` | 打印帮助。 |
 | `-V, --version` | 打印版本。 |
@@ -135,6 +177,10 @@ multype2txt -f text -i report.docx -o report.txt
 
 # 图片字节另存，占位符指向真实文件
 multype2txt --images-dir report-imgs -i report.docx -o report.md
+
+# legacy .doc 结构弱，先转 .docx 再转换（推荐）
+libreoffice --headless --convert-to docx --outdir out/ legacy.doc
+multype2txt -i out/legacy.docx -o legacy.md
 
 # 接入管道（结果与诊断分离）
 multype2txt -i annual.pptx | head -n 50
