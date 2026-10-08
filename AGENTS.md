@@ -43,6 +43,7 @@ src/converter/mod.rs   格式分派与支持列表
 src/converter/office.rs
 src/converter/pdf.rs
 tests/convert.rs       端到端转换测试
+examples/structure_probe.rs  结构还原探针（量化 plain_text vs markdown/html 差距）
 samples/               样例文档
 ```
 

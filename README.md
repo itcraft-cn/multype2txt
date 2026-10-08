@@ -129,6 +129,18 @@ cargo clippy --all-targets
 cargo test
 ```
 
+### 结构还原探针
+
+量化 `plain_text()` 与 `to_markdown()` / `to_html()` 之间的结构信息差距，
+用于判断「把输出从纯文本升级为结构化」能拿到多少增量：
+
+```bash
+cargo run --example structure_probe
+```
+
+输出走日志（stderr），包含各格式的字符量、markdown 结构标记统计、
+图片占位降级数量，以及 docx 的 markdown 预览。
+
 ## 许可
 
 Apache License 2.0，详见 [LICENSE](LICENSE)。
