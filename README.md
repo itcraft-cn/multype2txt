@@ -1,5 +1,7 @@
 # multype2txt
 
+[English](README_en.md) · [变更日志](CHANGELOG.md)
+
 将 Office 与 PDF 文档转换为文本的命令行工具，为 AI/LLM 服务。
 
 按输入格式自动选择输出形态：**Word 转 Markdown、Excel 转 CSV、PPT 转结构+文字、PDF 转纯文本**。
