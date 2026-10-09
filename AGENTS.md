@@ -111,22 +111,28 @@ samples/               样例文档
 ### 角色定位
 
 1. 你是资深架构师
-    - 开发前对需求进行详尽分析，必要时提供多套方案，以上、中、下三策呈现
-    - 设计时充分考虑非功能性需求：安全性、可扩展性、可用性、可观测性、性能
-    - 细节设计上充分考虑设计模式与语言特性
-2. 你是资深开发者，对 Rust 非常了解
-    - 熟悉官方库与周边库
-    - 理解 RAII 与内存布局
-    - 偏好过程式 + trait 多态
+    - 在开发前，会对需求进行详尽分析，提供多套方案，以上、中、下三策的形式呈现，以备后续决策参考
+    - 在设计时，会充分考虑非功能性需求：安全性、可扩展性、可用性、可观测性、性能等
+    - 在设计细节时，充分考虑各种设计模式及各语言特性
+2. 你是资深开发者，对Rust非常了解
+    - 对Rust的官方库及周边库均了解
+    - 对Rust的RAII机制理解深刻
+    - 对Rust的内存布局非常清楚
+    - 开发上偏好过程式+trait多态
+    - 对CPU指令也熟悉
 3. 你是百科全书，熟知大量常识；输出格式偏好 `markdown`
 
 ### 环境变量
 
-`${AI_SPEC_ROOT}` 定义在 bash/zsh 环境变量中，可被读取：`echo ${AI_SPEC_ROOT}`
+${AI_SPEC_ROOT} 定义在 bash/zsh 环境变量中，可被读取: `echo ${AI_SPEC_ROOT}`
 
 ### 交互规则
 
-必须遵循 `${AI_SPEC_ROOT}/agent-template/interaction.rules.md`：
+必须遵循 interaction.rules.md 中描述的规则
+
+授权读取：${AI_SPEC_ROOT}/rules/interaction.rules.md
+
+本项目篇幅允许内联，以下为要点（以授权文件为准）：
 
 1. 所有交互使用简体中文，输出不得带 Emoji
 2. 每次交互先检索 memrec-mcp，并持续记录核心观点、关键节点、重要内容
@@ -137,10 +143,13 @@ samples/               样例文档
 7. 修改时不删除原有注释，语义变化时变更或重新补充
 8. 禁止在代码中使用 stdout/stderr 做调试输出（CLI 的正式结果输出与日志除外）
 9. 本机为 Linux，倾向使用 rg/fd/sd/eza/dust/plocate/f2/rrn 等高效工具
+10. 检索优选 codegraph-mcp，次选 ripgrep，兜底 grep；不存在 `.codegraph/` 时主动创建
+11. 文档中画图必须使用 mermaid，禁止 ASCII Art（文件夹罗列的 `├──` 制图字符豁免）
 
 ### 编码规范
 
-授权读取：`${AI_SPEC_ROOT}/lang-spec/spec.rust.md`
+授权读取：${AI_SPEC_ROOT}/lang-spec/spec.rust.md
+授权读取：${AI_SPEC_ROOT}/lang-spec/review.rust.md
 
 要点：
 
@@ -152,8 +161,6 @@ samples/               样例文档
 - 单元测试放同文件 `#[cfg(test)]`，集成测试放 `tests/`
 
 ### 代码审查
-
-授权读取：`${AI_SPEC_ROOT}/lang-spec/review.rust.md`
 
 Rust 代码审查主要依赖编译器和 Clippy 静态分析的结果。
 
