@@ -113,7 +113,7 @@ multype2txt -i <输入文件> [-o <输出文件>] [-f <格式>] [--images-dir <�
 | `-o, --output <FILE>` | 可选。输出文件路径；缺省写入标准输出。 |
 | `-f, --format <FMT>` | 可选。`auto`（默认）/ `markdown` / `csv` / `text`。 |
 | `--images-dir <DIR>` | 可选。把图片字节导出到该目录，占位符指向实际文件。对 Markdown 输出（`docx`/`pptx`）与 PDF 有效；对 `doc`/`ppt` 不生效，对 CSV 输出报错。 |
-| `-v, --verbose` | 可选。打开诊断日志（`-v`=info，`-vv`=debug），日志只写 stderr。 |
+| `-v, --verbose` | 可选。诊断日志额外输出到 stderr（`-v`=info，`-vv`=debug）；默认只写日志文件。 |
 | `-h, --help` / `-V, --version` | 帮助 / 版本。 |
 
 ### 基本示例
@@ -155,7 +155,9 @@ done
 ## 输出约定
 
 - 转换结果只出现在 stdout（或 `-o` 文件）中。
-- 诊断日志只写 stderr，默认关闭（仅 error）；需要排查时加 `-v`。
+- 诊断日志默认只写 `/tmp/<输入文件名>.conv.err.log`：没有警告或错误就不生成该
+  文件；有问题时 stderr 会在输出结束后打一行提示给出路径。加 `-v` 则日志同时
+  显示在 stderr，便于排查。
 - 该命令不读取 `RUST_LOG`，外部环境变量不会导致日志混入数据。
 - PDF 按页面阅读顺序抽取正文，页与页之间以换行符 `U+000C`（`\f`）分隔，
   用于保留分页边界，不产生可见的标记文本。

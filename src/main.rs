@@ -14,21 +14,39 @@
 //! 设计约定：
 //!
 //! - 转换结果只写入标准输出或 `-o` 指定的文件，保证管道可用；
-//! - 诊断信息固定写 stderr，且默认关闭（仅输出 error），永不进入标准输出；
-//! - 是否输出日志由 `-v/-vv` 决定，刻意不读取 `RUST_LOG`，避免外部环境变量
-//!   意外打开底层解析库的高频日志、弄脏数据流；
+//! - 诊断日志默认只写入临时目录的 `<输入文件名>.conv.err.log`（如
+//!   `/tmp/demo.xlsx.conv.err.log`），既不进 stdout 也不在终端刷屏；
+//!   `-v` 起才额外同步输出到 stderr，`-v` 的日志本身仍不经 stdout；
+//! - 默认模式下（无 `-v`）本次转换存在警告或错误时，全部输出结束后
+//!   stderr 追加一行提示，指向上述日志文件；没有任何警告或错误则不
+//!   留下日志文件。`-v` 时日志已实时显示在 console，不再重复提示；
+//! - 同一输入文件重复转换时旧日志先被删除，日志只反映最近一次；
+//! - 是否输出更多日志由 `-v/-vv` 决定，刻意不读取 `RUST_LOG`，避免外部
+//!   环境变量意外打开底层解析库的高频日志、弄脏数据流；
 //! - 请求了输入无法提供的输出格式时直接报错退出，不静默降级；
 //! - 任何失败都以非零退出码结束，便于脚本判断。
 
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::Parser;
 use log::LevelFilter;
+use log4rs::append::console::{ConsoleAppender, Target};
+use log4rs::append::file::FileAppender;
+use log4rs::config::{Appender, Config, Root};
+use log4rs::encode::pattern::PatternEncoder;
 
 use multype2txt::output::default_format;
 use multype2txt::{convert_with, ConvertOptions, ImagePolicy, OutputFormat};
+
+/// stderr 控制台日志格式：时间 级别 target 消息。
+///
+/// 与 env_logger 的默认观感保持接近，便于按既有习惯检索；控制台不着色，
+/// 因为 `-v` 的输出常被重定向到文件或 CI 日志，转义序列只会成为噪声。
+const PATTERN_CONSOLE: &str = "[{d} {l} {t}] {m}{n}";
+/// 日志文件格式：在控制台格式基础上附行号，便于回溯到源码位置。
+const PATTERN_FILE: &str = "[{d} {l} {t} L{L}] {m}{n}";
 
 /// 命令行参数。
 #[derive(Debug, Parser)]
@@ -63,40 +81,156 @@ struct Cli {
     #[arg(long = "images-dir", value_name = "DIR")]
     images_dir: Option<PathBuf>,
 
-    /// 诊断日志级别：-v 打开 info，-vv 打开 debug（始终写 stderr）
+    /// 诊断日志：默认只写日志文件；-v 额外输出到 stderr 并放宽到 info，-vv 到 debug
     #[arg(short = 'v', long = "verbose", action = clap::ArgAction::Count)]
     verbose: u8,
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    init_logging(cli.verbose);
 
-    match run(&cli) {
-        Ok(()) => ExitCode::SUCCESS,
+    // 日志文件按输入文件命名（demo.xlsx → /tmp/demo.xlsx.conv.err.log）。
+    // 先删旧文件：同一输入重复转换时日志覆盖而非续写，只反映最近一次。
+    let log_path = log_file_path(&cli.input);
+    let _ = std::fs::remove_file(&log_path);
+
+    init_logging(cli.verbose, &log_path);
+
+    let result = run(&cli);
+
+    // 提示行必须排在全部输出之后，因此先落日志、再报告、最后给提示。
+    // （FileAppender 每条日志写完即 flush，此处读到的文件状态已是最终态。）
+    match &result {
+        Ok(()) => {}
         Err(err) => {
-            // 失败原因走日志（stderr），退出码非零，标准输出保持干净。
-            log::error!("{err:#}");
-            ExitCode::FAILURE
+            // 失败原因是命令行的正式输出（与非零退出码配套），直接写 stderr。
+            // 不走日志系统：默认模式日志只进文件，走日志会让调用方在终端
+            // 看不到失败原因。
+            eprintln!("error: {err:#}");
         }
+    }
+    report_log(&log_path, cli.verbose);
+
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(_) => ExitCode::FAILURE,
     }
 }
 
-/// 初始化日志：永远写 stderr，默认只输出 error，`-v` 逐级放宽。
+/// 构造日志文件路径：`<临时目录>/<输入文件名>.conv.err.log`。
 ///
-/// 不使用 `env_logger::from_env`，因此忽略 `RUST_LOG`。这样即使用户环境里
-/// 预设了 `RUST_LOG=info/debug`，转换结果所在的数据流也不会被日志干扰。
-fn init_logging(verbose: u8) {
+/// Linux 下临时目录即 `/tmp`，例如输入 `demo.xlsx` 得到
+/// `/tmp/demo.xlsx.conv.err.log`。用 `env::temp_dir()` 而非硬编码 `/tmp`，
+/// 在没有该目录的平台上退化到系统临时目录而不是直接失败。
+///
+/// # 参数
+///
+/// - `input`: 输入文件路径，只取其文件名部分，避免目录层级撑爆临时目录。
+///
+/// # 返回
+///
+/// 日志文件的完整路径。
+fn log_file_path(input: &Path) -> PathBuf {
+    let name = input
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| String::from("multype2txt"));
+    std::env::temp_dir().join(format!("{name}.conv.err.log"))
+}
+
+/// 收尾检查日志文件：默认模式下有内容则提示路径，空文件一律删除。
+///
+/// 「没有警告或错误就不留下日志」是本工具对使用者的承诺：默认模式（无
+/// `-v`）级别为 `Warn`，文件存在即说明本次转换确有问题；反之
+/// FileAppender 预创建的空文件必须清掉，否则「文件存在」本身就变成假信号。
+///
+/// `-v` 时不打提示行：日志已经在 console（stderr）实时显示，不存在
+/// 「被藏起来需要指路」的情况，而文件里可能只是 info 记录，再打一句
+/// 「存在问题」反而误导；文件本身仍留档，便于事后回看。
+///
+/// # 参数
+///
+/// - `log_path`: [`log_file_path`] 给出的日志文件路径。
+/// - `verbose`: `-v` 的个数，大于 0 时跳过提示行。
+fn report_log(log_path: &Path, verbose: u8) {
+    let has_content = std::fs::metadata(log_path)
+        .map(|meta| meta.len() > 0)
+        .unwrap_or(false);
+    if has_content {
+        if verbose == 0 {
+            eprintln!(
+                "warn: 本次转化存在些许问题，请查看日志 {}",
+                log_path.display()
+            );
+        }
+    } else {
+        let _ = std::fs::remove_file(log_path);
+    }
+}
+
+/// 初始化日志：默认只写文件，`-v` 起追加 stderr 控制台，级别逐级放宽。
+///
+/// 用 log4rs 而非 env_logger，是为了同时控制「写到哪」与「写不写控制台」：
+///
+/// - **无 `-v`**：仅 file appender。终端除转换结果与收尾提示外不出现任何
+///   日志，数据流与诊断彻底分离；
+/// - **`-v` / `-vv`**：file + console 双路。console 显式指向 stderr，
+///   永不进入 stdout；日志同时在文件留档，方便事后回看；
+/// - **级别**：默认 `Warn`（只在真有问题时才产生日志，默认不打 info），
+///   `-v` 放宽到 `Info`，`-vv` 到 `Debug`；
+/// - 与旧实现一致，**不读取 `RUST_LOG`**，避免外部环境变量意外打开
+///   底层解析库的高频日志。
+///
+/// 初始化失败时在 stderr 说明一句并返回——日志缺失不影响转换正确性，
+/// 流程继续，但绝不静默吞掉。正常返回时 log4rs 已接管全局 logger，
+/// 每条日志写完即 flush，无需调用方再收尾。
+///
+/// # 参数
+///
+/// - `verbose`: `-v` 的个数（0/1/2+）。
+/// - `log_path`: 日志文件路径；调用方须已删除旧文件，保证覆盖语义。
+fn init_logging(verbose: u8, log_path: &Path) {
     let level = match verbose {
-        0 => LevelFilter::Error,
+        0 => LevelFilter::Warn,
         1 => LevelFilter::Info,
         _ => LevelFilter::Debug,
     };
 
-    env_logger::Builder::new()
-        .target(env_logger::Target::Stderr)
-        .filter_level(level)
-        .init();
+    let file_appender = FileAppender::builder()
+        .encoder(Box::new(PatternEncoder::new(PATTERN_FILE)))
+        .build(log_path);
+    let file_appender = match file_appender {
+        Ok(appender) => appender,
+        Err(error) => {
+            eprintln!("error: 无法创建日志文件 {}: {error}", log_path.display());
+            return;
+        }
+    };
+
+    let mut builder =
+        Config::builder().appender(Appender::builder().build("file", Box::new(file_appender)));
+    let mut root = Root::builder().appender("file");
+
+    if verbose > 0 {
+        // 控制台显式指向 stderr：stdout 永远只有转换结果。
+        let console = ConsoleAppender::builder()
+            .target(Target::Stderr)
+            .encoder(Box::new(PatternEncoder::new(PATTERN_CONSOLE)))
+            .build();
+        builder = builder.appender(Appender::builder().build("console", Box::new(console)));
+        root = root.appender("console");
+    }
+
+    let config = match builder.build(root.build(level)) {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("error: 构建日志配置失败: {error}");
+            return;
+        }
+    };
+    if let Err(error) = log4rs::init_config(config) {
+        eprintln!("error: 初始化日志失败: {error}");
+    }
 }
 
 /// 执行一次转换，并按 `-o` 决定结果去向。

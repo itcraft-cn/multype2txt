@@ -21,9 +21,11 @@ clap = { version = "4", features = ["derive"] }
 # 统一的错误类型定义与传播
 anyhow = "1"
 thiserror = "2"
-# 日志：诊断信息走日志（stderr），转换结果走 stdout/输出文件
+# 日志门面：库内只用 log 宏，实际输出由 main 的 log4rs 承接
+# （默认只写日志文件，-v 才额外输出到 stderr，保证 stdout 数据纯净）
 log = "0.4"
-env_logger = "0.11"
+# 日志实现：文件 + 可选 console 双路，见 main.rs init_logging
+log4rs = "1.4"
 # Office 文档解析（doc/docx/xls/xlsx/ppt/pptx），纯 Rust，无 C/C++ 依赖
 # 精确锁定版本：pdf_oxide 依赖 office_oxide 的 IR 类型，二者版本必须配套，
 # 否则 pdf_oxide 编译时会因 DocumentIR 字段变化而失败。
@@ -43,3 +45,7 @@ opt-level = 3
 lto = true
 codegen-units = 1
 strip = true
+
+[dev-dependencies]
+# 仅供 examples/structure_probe.rs 使用（结构还原探针），不进入发布产物
+env_logger = "0.11"

@@ -37,7 +37,7 @@ CLI (clap)  ->  converter (按扩展名分派 + 选目标格式)
                      |-- grid.rs       网格 -> CSV（xlsx/xls 适配）
                      `-- PlainText     纯文本
                          |
-                    log + env_logger (诊断)
+                    log + log4rs (诊断：默认只进日志文件)
                   stdout / -o FILE (结果)
 ```
 
@@ -55,7 +55,7 @@ CLI (clap)  ->  converter (按扩展名分派 + 选目标格式)
 | 渲染层 | 自研 | `DocumentRenderer` trait，Markdown / CSV / 纯文本三个实现 |
 | 网格层 | `SheetSource` trait | xlsx 与 xls 各一个适配，CSV 序列化只写一次 |
 | 错误处理 | thiserror + anyhow | 库内定义 ConvertError，入口统一收口 |
-| 日志 | log + env_logger | 诊断仅写 stderr，默认关闭（error），`-v` 开启；结果写 stdout |
+| 日志 | log + log4rs | 默认只写 `/tmp/<输入名>.conv.err.log`（有问题才生成），`-v` 追加 stderr；结果写 stdout |
 
 ## 代码结构
 
@@ -84,6 +84,12 @@ samples/               样例文档
   `dyn for<'b> FnMut(...) + 'a`，少任一处都会退化成 `'static` 而编译失败。
 - **不静默降级**：输入输出格式不兼容时返回 `IncompatibleOutput`，
   图片导出失败时返回 `ImageExport`，都不得悄悄降级。
+- **日志与输出的边界不可倒置**：诊断日志默认只进
+  `/tmp/<输入名>.conv.err.log`（log4rs file appender，`-v` 才追加
+  stderr console），stdout 永远只有转换结果；失败原因走 `eprintln!`
+  而非日志（默认模式日志不上终端，走日志会让调用方看不到失败原因）；
+  提示行只在默认模式且日志文件非空时打——文件为空必须删除，
+  否则「文件存在」本身就是假信号。
 - **xls 的 SST 错位缺陷不修、只文档化**：`office_oxide` 0.1.3 把 SST 与
   `CONTINUE` 记录简单拼接后顺序读，忽略 [MS-XLS] §2.5.293 规定的边界
   grbit 编码标志，字符串错位导致输出混入 NUL/控制字节（实测 65562 行中
