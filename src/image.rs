@@ -86,7 +86,15 @@ pub(crate) fn write_image_bytes(
 /// # 返回
 ///
 /// 形如 `imgs/img-0001.png` 的 URL。
+///
+/// # 注意
+///
+/// Windows 上 `--images-dir C:\data\imgs` 会给出反斜杠路径，而 Markdown
+/// 链接里的反斜杠是转义字符，URL 会被解析器切碎。这里统一归一为 `/`。
+/// 是否补 `file://` 由调用方自己决定——传 `--images-dir file:///…` 即可，
+/// 工具不替调用方猜语义。
 pub(crate) fn join_url(prefix: &str, file_name: &str) -> String {
+    let prefix = prefix.replace('\\', "/");
     if prefix.is_empty() {
         file_name.to_string()
     } else if prefix.ends_with('/') {
@@ -120,7 +128,7 @@ pub(crate) fn sniff_image_extension(bytes: &[u8]) -> &'static str {
         "bmp"
     } else if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
         "webp"
-    } else if bytes.starts_with(&[0x01, 0x00, 0x00, 0x00]) {
+    } else if is_emf(bytes) {
         "emf"
     } else if bytes.starts_with(&[0xD7, 0xCD, 0xC6, 0x9A]) {
         "wmf"
@@ -131,9 +139,35 @@ pub(crate) fn sniff_image_extension(bytes: &[u8]) -> &'static str {
     }
 }
 
+/// EMF 签名 `dSignature` 的偏移（[MS-EMF] `EMR_HEADER`）：iType(4) +
+/// nSize(4) + rclBounds(16) + rclFrame(16) = 40。
+const EMF_SIGNATURE_OFFSET: usize = 40;
+
+/// 判断字节流是否为 EMF。
+///
+/// 仅凭前 4 字节 `01 00 00 00`（`iType = EMR_HEADER`）不足以定性：那是
+/// 一个极常见的小端整数，任何以此开头的二进制都会被误判成 EMF。因此还
+/// 要求偏移 40 处的 `dSignature` 等于 `" EMF"`（`0x464D4520`，小端）——
+/// 这是 EMF 自己声明的身份，识别不出时落到 `bin` 兜底也比写错扩展名强。
+fn is_emf(bytes: &[u8]) -> bool {
+    if bytes.len() <= EMF_SIGNATURE_OFFSET || !bytes.starts_with(&[0x01, 0x00, 0x00, 0x00]) {
+        return false;
+    }
+    let signature = u32::from_le_bytes([
+        bytes[EMF_SIGNATURE_OFFSET],
+        bytes[EMF_SIGNATURE_OFFSET + 1],
+        bytes[EMF_SIGNATURE_OFFSET + 2],
+        bytes[EMF_SIGNATURE_OFFSET + 3],
+    ]);
+    signature == 0x464D_4520
+}
+
 /// 粗略判断字节流是否为 SVG（XML 声明或根元素）。
+///
+/// 扫描窗口取 8 KiB：Illustrator 之类工具导出的 SVG 常在根元素前塞进
+/// 长长的 XML 注释与许可证声明，只看文件开头 1 KiB 会漏判。
 fn contains_svg_marker(bytes: &[u8]) -> bool {
-    let head = &bytes[..bytes.len().min(1024)];
+    let head = &bytes[..bytes.len().min(8 * 1024)];
     let text = String::from_utf8_lossy(head).to_ascii_lowercase();
     text.contains("<svg")
 }
@@ -154,11 +188,45 @@ mod tests {
         assert_eq!(sniff_image_extension(&[0x00, 0x01, 0x02]), "bin");
     }
 
+    /// EMF 要同时看 `iType` 与偏移 40 的 `dSignature`：只有前 4 字节的
+    /// `01 00 00 00` 是个过于常见的小端整数，单独用它会把大量二进制
+    /// 误判成 EMF。
+    #[test]
+    fn emf_requires_signature_not_just_header() {
+        let mut emf = vec![0x01, 0x00, 0x00, 0x00];
+        emf.resize(EMF_SIGNATURE_OFFSET + 4, 0);
+        emf[EMF_SIGNATURE_OFFSET..EMF_SIGNATURE_OFFSET + 4]
+            .copy_from_slice(&0x464D_4520u32.to_le_bytes());
+        assert_eq!(sniff_image_extension(&emf), "emf");
+
+        assert_eq!(sniff_image_extension(&[0x01, 0x00, 0x00, 0x00]), "bin");
+        let mut too_short = vec![0x01, 0x00, 0x00, 0x00];
+        too_short.resize(EMF_SIGNATURE_OFFSET, 0);
+        assert_eq!(sniff_image_extension(&too_short), "bin");
+    }
+
+    /// SVG 根元素可能被长注释推到 1 KiB 之后，扫描窗口须足够大。
+    #[test]
+    fn svg_after_long_header_comment_is_recognized() {
+        let mut bytes = b"<?xml version=\"1.0\"?>\n<!--".to_vec();
+        bytes.extend(std::iter::repeat_n(b'x', 4000));
+        bytes.extend_from_slice(b"-->\n<svg xmlns=\"x\"/>");
+        assert_eq!(sniff_image_extension(&bytes), "svg");
+    }
+
     #[test]
     fn join_url_avoids_double_slash() {
         assert_eq!(join_url("imgs", "a.png"), "imgs/a.png");
         assert_eq!(join_url("imgs/", "a.png"), "imgs/a.png");
         assert_eq!(join_url("", "a.png"), "a.png");
+    }
+
+    /// Windows 路径的反斜杠在 Markdown 链接里是转义字符，必须归一为 `/`，
+    /// 否则 URL 会被解析器切碎。
+    #[test]
+    fn join_url_normalizes_windows_separators() {
+        assert_eq!(join_url(r"C:\data\imgs", "a.png"), "C:/data/imgs/a.png");
+        assert_eq!(join_url(r"imgs\", "a.png"), "imgs/a.png");
     }
 
     #[test]

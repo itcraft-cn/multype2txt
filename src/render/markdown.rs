@@ -62,6 +62,10 @@ impl DocumentRenderer for MarkdownRenderer {
         match source {
             // 本来就是文本的输入（PDF）原样透传：PDF 没有结构可还原，
             // 任何「结构化」改写都只是凭空编造。
+            //
+            // 当前不可达：分派层只允许 PDF 走 `Text`（PlainTextRenderer），
+            // `MarkdownRenderer` 实际只会收到 Office 文档。保留此分支是为
+            // 将来放开 PDF→Markdown 时少改一处，**不代表该路径已经跑通**。
             Source::Plain(text) => Ok((*text).to_string()),
             Source::Office(doc) => {
                 let ir = doc.to_ir();
@@ -440,6 +444,12 @@ fn render_list(list: &List, indent: usize, state: &mut State<'_>) -> Result<Stri
             out.push_str(&marker);
             out.push('\n');
         } else {
+            // 续行必须缩进到本项 marker 之后文本的起始列（CommonMark 的
+            // 载入规则）：`- ` 是 2 列、`1. ` 是 3 列、`10. ` 是 4 列。统一
+            // 按 2 列会让有序列表的续行提前，严格的解析器会把它当成新段落。
+            // 子列表仍按每层 4 空格，4 始终 ≥ 任何两位数以内的 marker 宽度，
+            // 不会被误认成父项的续行。
+            let continuation = format!("{padding}{}", " ".repeat(marker.len()));
             let mut lines = blocks.split('\n');
             let first = lines.next().unwrap_or("");
             out.push_str(&format!("{padding}{marker}{}\n", collapse_inline(first)));
@@ -448,7 +458,7 @@ fn render_list(list: &List, indent: usize, state: &mut State<'_>) -> Result<Stri
                 if line.trim().is_empty() {
                     continue;
                 }
-                out.push_str(&format!("{padding}  {}\n", collapse_inline(line)));
+                out.push_str(&format!("{continuation}{}\n", collapse_inline(line)));
             }
         }
 
@@ -599,6 +609,11 @@ fn join_cell_lines_html(lines: &[String]) -> String {
 }
 
 /// 转义 Markdown 表格单元格内的管道符，否则会撑破表格结构。
+///
+/// **只转义会破坏结构的字符**：`*`/`_`/`` ` `` 转义与否都不影响表格边界，
+/// 全转义反而污染正文。已知局限：若原文自带 `\|`（上游已转义过），这里会
+/// 得到 `\\|`，解析器读到 `\\` + `|` 仍会断表——Markdown 的转义本身没有
+/// 幂等形式，此处接受现状。
 fn escape_table_cell(text: &str) -> String {
     text.replace('|', "\\|")
 }

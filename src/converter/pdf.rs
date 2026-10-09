@@ -17,7 +17,9 @@
 //!
 //! 页对齐依赖底层契约：`extract_all_text` 的分段数恒等于 `page_count()`，
 //! 因此「按换页符切分的第 N 段」就是「第 N 页」。本模块不自行推算页数，
-//! 也不允许错位插入——占位符挂在错误的页上比不插更糟。
+//! 但会**在生产环境校验**该契约（不只写在注释里）：一旦分段数与页数不符
+//! 就返回 [`ConvertError::ImageExport`]，绝不错位插入——占位符挂在错误的
+//! 页上比不插更糟。
 
 use std::path::Path;
 
@@ -73,9 +75,11 @@ pub fn extract(path: &Path, options: &ConvertOptions) -> Result<String, ConvertE
 ///
 /// 成功时返回重组后的全文。
 ///
-/// 两类失败的处理方式不同：
+/// 三类失败的处理方式不同：
 ///
-/// - **整体性失败**（目录不可写、某页无法访问）返回
+/// - **分页契约被破坏**（分段数 ≠ `page_count()`）返回
+///   [`ConvertError::ImageExport`]：继续只会把占位符挂到错误的页上。
+/// - **整体性失败**（目录不可写、某页无法访问）同样返回
 ///   [`ConvertError::ImageExport`]——此时继续只会产出残缺结果。
 /// - **单张图失败**（解码被拒、单文件写盘失败）不中断：该图不落盘，改为在
 ///   页末写一行 `[图片N 导出失败: 原因]` 并记 error 日志。直接跳过就成了
@@ -90,7 +94,27 @@ fn export_page_images(
     // 目录不可写是整体性失败，一开始就报错，不要等到逐张写盘时才发现。
     ensure_dir(dir)?;
 
+    // 页对齐是「按页挂占位符」的前提，因此这里在生产环境也校验，而不是只写在
+    // 注释里：按契约 `extract_all_text` 的分段数恒等于 `page_count()`，一旦不
+    // 等就说明底层契约已变（库升级、边界 PDF）。继续下去会让占位符挂到错误
+    // 的页上——错位比不插更糟。
+    let page_count = document
+        .page_count()
+        .map_err(|error| ConvertError::ImageExport {
+            path: dir.display().to_string(),
+            message: format!("读取页数失败: {error}"),
+        })?;
     let mut pages: Vec<String> = text.split(FEED).map(str::to_string).collect();
+    if pages.len() != page_count {
+        return Err(ConvertError::ImageExport {
+            path: dir.display().to_string(),
+            message: format!(
+                "分页对齐失败: 文本按换页符切出 {} 段，文档实际 {page_count} 页，\
+                 图片无法挂到正确页",
+                pages.len()
+            ),
+        });
+    }
 
     let mut sequence = 0usize;
     for (page_index, page) in pages.iter_mut().enumerate() {

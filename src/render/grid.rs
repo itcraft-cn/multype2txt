@@ -77,6 +77,13 @@ impl GridCell {
 /// `1.0` 输出 `1`、`1.5` 输出 `1.5`，避免导出 `1.0000000000000002` 这类
 /// 二进制浮点噪声；绝对值过大（超出 i64 精确范围）时交给 Rust 的最短
 /// 往返格式化，避免 `as i64` 的饱和截断。
+///
+/// # 边界
+///
+/// 超出 i64 精确范围后，Rust 的默认格式可能给出科学计数法（`1e100`、
+/// `1e-10`）。这在 CSV 里是合法数值，但部分下游（Excel、某些数据库导入）
+/// 会把它当字符串。需要恒定十进制表示的调用方应自行格式化——强行展开
+/// 必然以精度损失为代价，故这里不做默认取舍。
 fn format_number(value: f64) -> String {
     if !value.is_finite() {
         return String::new();
@@ -352,12 +359,17 @@ fn convert_xlsx_value(value: &xlsx::CellValue, shared: &xlsx::SharedStringTable)
         xlsx::CellValue::Empty => GridCell::Empty,
         xlsx::CellValue::Number(number) => GridCell::Number(*number),
         xlsx::CellValue::String(text) => GridCell::Text(text.clone()),
-        xlsx::CellValue::SharedString(index) => GridCell::Text(
-            shared
-                .get_shared(*index)
-                .map(|entry| entry.text.clone())
-                .unwrap_or_default(),
-        ),
+        xlsx::CellValue::SharedString(index) => match shared.get_shared(*index) {
+            Some(entry) => GridCell::Text(entry.text.clone()),
+            None => {
+                // 索引越界说明文件损坏或底层解析缺项。返回空串会把这段内容
+                // 静默吞掉——阅读方无法区分「这个单元格本来就空」和「内容
+                // 丢了」，与本项目「不静默降级」的原则相悖。改标为错误值并
+                // 记日志，数据丢失至少是可见的。
+                log::warn!("共享字符串索引 {index} 越界，该单元格内容不可得");
+                GridCell::Error(format!("#SST!{index}"))
+            }
+        },
         xlsx::CellValue::Boolean(value) => GridCell::Bool(*value),
         xlsx::CellValue::Error(code) => GridCell::Error(code.clone()),
         xlsx::CellValue::Date(value) => GridCell::DateTime(value.to_iso_string()),
