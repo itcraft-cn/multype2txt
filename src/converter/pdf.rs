@@ -32,7 +32,7 @@ use std::path::Path;
 
 use pdf_oxide::extractors::{ImageData, PdfImage};
 
-use crate::converter::pdf_table::{self, PlacedWord};
+use crate::converter::pdf_table;
 use crate::error::ConvertError;
 use crate::image::{ensure_dir, join_url, png_file_name, write_image_bytes};
 use crate::output::{ConvertOptions, ImagePolicy};
@@ -87,6 +87,10 @@ fn extract_text_with_tables(document: &pdf_oxide::PdfDocument) -> Result<String,
 }
 
 /// 重建单页文本：坐标路径检出表格则用重建结果，否则沿用基线。
+///
+/// 这里只做类型适配：把底层的词包围盒与字号交给 `pdf_table`，几何判断与容错
+/// 全部在那边完成。单页坐标抽取失败只记 warn 并回退该页基线——单页降级不该让
+/// 整篇转换失败（基线文本仍是完整信息，只是该页表格行列错乱）。
 fn rebuild_page_text(
     document: &pdf_oxide::PdfDocument,
     page_index: usize,
@@ -95,7 +99,6 @@ fn rebuild_page_text(
     let words = match document.extract_words(page_index) {
         Ok(words) => words,
         Err(error) => {
-            // 坐标抽取失败只影响该页的表格还原，基线文本仍在。
             log::warn!(
                 "第 {} 页词坐标抽取失败，回退基线文本: {error}",
                 page_index + 1
@@ -103,20 +106,39 @@ fn rebuild_page_text(
             return baseline.to_string();
         }
     };
-    let placed: Vec<PlacedWord> = words
+    let input: Vec<pdf_table::RawWord> = words
         .iter()
         .map(|word| {
             let bbox = word.bbox;
-            PlacedWord::new(
-                word.text.clone(),
-                bbox.x,
-                bbox.y,
-                bbox.x + bbox.width,
-                bbox.y + bbox.height,
-            )
+            pdf_table::RawWord {
+                text: word.text.clone(),
+                x0: bbox.x,
+                y0: bbox.y,
+                x1: bbox.x + bbox.width,
+                y1: bbox.y + bbox.height,
+                font_size: word.avg_font_size,
+                sequence: word.sequence,
+            }
         })
         .collect();
-    pdf_table::rebuild_page(placed).unwrap_or_else(|| baseline.to_string())
+    match pdf_table::rebuild_page(input) {
+        Some(rebuilt) => {
+            // 页面级一致性：重建可以改变顺序、可以多出页脚页码，但绝不能少字。
+            // 两条抽取路径偶尔给出不同的字符集合，缺字的页一律以基线为准。
+            if pdf_table::verify::covers_baseline(baseline, &rebuilt) {
+                rebuilt
+            } else {
+                let (missing, missing_sample, extra, extra_sample) =
+                    pdf_table::verify::char_diff(baseline, &rebuilt);
+                log::warn!(
+                    "第 {} 页重建结果与基线字符集合不一致（缺 {missing} 如 {missing_sample:?}，多 {extra} 如 {extra_sample:?}），回退基线文本",
+                    page_index + 1
+                );
+                baseline.to_string()
+            }
+        }
+        None => baseline.to_string(),
+    }
 }
 
 /// 按页抽取图片并在各页文本末尾追加占位符。

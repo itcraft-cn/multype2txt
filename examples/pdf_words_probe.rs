@@ -1,11 +1,19 @@
-//! PDF 词坐标探针：验证 `extract_words()` 的坐标数据质量，为自研表格重建铺路。
+//! PDF 词坐标探针 / 测试夹具生成器。
 //!
-//! 输出指定页的每个词及其包围盒（x0/y0/x1/y1，PDF point，y 轴向上），
-//! 供人工核对行聚类与列锚点的可行性。输出走 stdout（探针工具，非生产路径）。
+//! 按页输出 `extract_words()` 的原始数据：包围盒、字号、文本矩阵方向、
+//! 内容流发射序与词文本。输出走 stdout（探针工具，非生产路径），制表符分隔，
+//! 一页一组，组首为 `# page <页码> <词数>`。
+//!
+//! 两个用途：
+//!
+//! 1. 人工核对：直接观察某页的词坐标、字号与方向，判断行聚类/列边界是否可能成立；
+//! 2. 生成 `tests/fixtures/pdf/` 下的夹具：夹具只存词坐标，不存 PDF，
+//!    单元测试因此无需解析 PDF，毫秒级且确定。
 //!
 //! 运行：
 //! ```bash
-//! cargo run --example pdf_words_probe -- samples/demo2.pdf 57 58
+//! cargo run --example pdf_words_probe -- samples/demo2.pdf 58 > page58.words.tsv
+//! cargo run --example pdf_words_probe -- samples/demo2.pdf 193 207 | head -20
 //! ```
 
 use std::env;
@@ -40,32 +48,29 @@ fn main() {
                 continue;
             }
         };
-        println!("=== 第 {page_1} 页：{} 词 ===", words.len());
-        // 按 y 降序（页面从上到下）再按 x 升序输出，便于直接观察行列结构。
-        let mut sorted: Vec<_> = words.iter().collect();
-        sorted.sort_by(|a, b| {
-            b.bbox
-                .y
-                .partial_cmp(&a.bbox.y)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then(
-                    a.bbox
-                        .x
-                        .partial_cmp(&b.bbox.x)
-                        .unwrap_or(std::cmp::Ordering::Equal),
-                )
-        });
-        for word in sorted {
-            let b = word.bbox;
+        println!("# page {page_1} {}", words.len());
+        for word in &words {
+            // 文本矩阵的 (a, b) 给出该词在设备空间的推进方向，
+            // 旋转判定只依赖这两个分量（完整矩阵对聚类无用）。
+            let (a, b) = word
+                .chars
+                .first()
+                .and_then(|ch| ch.matrix)
+                .map(|m| (m[0], m[1]))
+                .unwrap_or((1.0, 0.0));
+            let bbox = word.bbox;
             println!(
-                "x0={:7.1} y0={:7.1} x1={:7.1} y1={:7.1} fs={:4.1} seq={:4} {}",
-                b.x,
-                b.y,
-                b.x + b.width,
-                b.y + b.height,
+                "{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.2}\t{:.4}\t{:.4}\t{}\t{}",
+                bbox.x,
+                bbox.y,
+                bbox.x + bbox.width,
+                bbox.y + bbox.height,
                 word.avg_font_size,
+                a,
+                b,
                 word.sequence,
-                word.text.escape_debug()
+                // 制表符/换行会破坏 TSV 结构，夹具里以空格代替（不影响几何与文本判定）。
+                word.text.replace(['\t', '\n', '\r'], " ")
             );
         }
     }

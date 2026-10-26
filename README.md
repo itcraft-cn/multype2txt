@@ -179,6 +179,10 @@ PDF 默认输出纯文本，图片没有落点。`--images-dir` 对 PDF 有效�
 - PDF 的**表格**可还原为对齐的纯文本网格（无边框表格、密集数字矩阵同样有效），
   但这仍是「纯文本」：没有 Markdown 语法，跨行合并单元格表现为下方行的空单元格。
   因此 `-f markdown/csv` 对 PDF 仍一律报错。
+- PDF 表格重建的判据全部无量纲（字号的 em 倍数、重叠比例、行数），没有为某份
+  文档试出来的 point 阈值；旋转页靠字体度量纠正高度、不猜方向。**已知边界**：
+  两级表头列数不同时对齐只在子列层面成立；双栏正文会按两列网格还原；跨页表格
+  不拼接；示意图里的标签框会被当作多列结构重排（内容不丢，线性阅读变差）。
 - PDF 的**公式不还原**：数学公式的上下标在坐标上是散落的小词，重建结果可能比
   阅读顺序流更紧凑但仍然不可读（如 `KIRB` 的下标漂移）；这是底层词切分的粒度
   限制，字符不丢但位置可能局部错位。
@@ -295,16 +299,24 @@ src/
     mod.rs             # 按扩展名分派，选择目标输出格式
     office.rs          # Office 六种格式 -> 打开文档后交给渲染层
     pdf.rs             # PDF -> 纯文本（基线阅读顺序 + 表格页坐标重建）
-    pdf_table.rs       # PDF 表格重建：词坐标行列聚类，对齐纯文本网格
+    pdf_table/         # PDF 表格重建：坐标几何判定链
+      mod.rs           #   编排：归一化 -> 行 -> 区块 -> 列 -> 网格 -> 自检
+      word.rs          #   词几何归一化（字体度量修正）、词间空格判定
+      lines.rs         #   行聚类、表格行/正文行切分、目录行识别
+      columns.rs       #   列检出：无词跨越的垂直空白带即列界
+      grid.rs          #   网格装配、复制源对齐方式、渲染
+      verify.rs        #   自检：字符守恒 + 行宽有界
+      profile.rs       #   全部可调量（无量纲，逐项注明来源）
   render/
     mod.rs             # DocumentRenderer trait + 渲染器工厂 + 纯文本实现
     markdown.rs        # 自研 IR -> Markdown 渲染器
     grid.rs            # SheetSource trait + xlsx/xls 网格适配 + CSV 序列化
 tests/
   convert.rs           # 针对 samples/ 的端到端测试（链路 + 分派 + 报错 + 图片导出）
+  data/pdf/            # 真实页面的词坐标（TSV），供表格重建的单元测试与回归门槛
 examples/
   structure_probe.rs   # 结构还原探针：量化纯文本与结构化输出的差距
-  pdf_words_probe.rs   # PDF 词坐标探针：核对行聚类与列锚点的原始数据
+  pdf_words_probe.rs   # 词坐标探针 / 测试数据生成器（TSV，见 tests/data/pdf/）
 samples/               # 随附的小体积样例文档
 ```
 

@@ -49,6 +49,31 @@ fn converts_pdf() {
     assert_converts("demo.pdf");
 }
 
+/// 表格重建的产品契约：整篇不漏页、不出现退化行、表格内容可读。
+///
+/// 只断言结构性质，不比对整段文本——底层库换行微调不应让这条测试变红。
+#[test]
+fn converts_pdf_with_table_rebuild() {
+    let text = convert_file(&sample("demo2.pdf")).expect("转换 demo2.pdf");
+    // 页数由基线文本的换页符给出，重建不改页数。
+    assert_eq!(text.split('\u{c}').count(), 232, "页数必须与原文一致");
+    // 退化行：旧实现在 /Rotate 页上曾输出 700+ 字符的一行。
+    // 按页统计——换页符不是换行符，跨页的「行」没有意义。
+    let widest = text
+        .split('\u{c}')
+        .flat_map(|page| page.lines())
+        .map(|line| line.chars().count())
+        .max()
+        .unwrap_or(0);
+    assert!(widest <= 200, "出现退化行：{widest} 字符");
+    // 表格内容可读：同一行的多个单元格必须同时出现在一行里。
+    let row = text
+        .lines()
+        .find(|line| line.contains("200 及200以上"))
+        .expect("放大倍数表的数据行");
+    assert!(row.contains("红区") && row.contains("3.0"), "实际：{row}");
+}
+
 /// 二进制老格式（DOC/XLS/PPT）走的解析分支与 OOXML 不同，必须一并覆盖。
 #[test]
 fn converts_legacy_office_formats() {
