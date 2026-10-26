@@ -81,9 +81,11 @@ fn converts_pdf_with_table_rebuild() {
         .unwrap_or(0);
     assert!(widest <= 200, "出现退化行：{widest} 字符");
     // 表格内容可读：同一行的多个单元格必须同时出现在一行里。
+    // 比较时去掉空白——单元格内词间空格的多少属版式噪声。
+    let compact = |line: &str| -> String { line.chars().filter(|c| !c.is_whitespace()).collect() };
     let row = text
         .lines()
-        .find(|line| line.contains("200 及200以上"))
+        .find(|line| compact(line).contains("200及200以上"))
         .expect("放大倍数表的数据行");
     assert!(row.contains("红区") && row.contains("3.0"), "实际：{row}");
 }

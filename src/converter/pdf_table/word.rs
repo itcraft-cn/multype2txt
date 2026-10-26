@@ -184,8 +184,9 @@ pub(crate) fn display_width(s: &str) -> usize {
 /// 2. 两个西文词来自**不同绘制段**（[`PlacedWord::sequence`] 不同）且不重叠：
 ///    不同绘制段不可能是同一个词的拆分，即使间隙不足一个空格宽也要分开——
 ///    图示里的标签框、并排的独立文本框都属于这种情况；
-/// 3. 间隙小于 [`Profile::space_em`] 倍字号：是字距微调或紧排，不补；
-/// 4. 其余情况补一个空格——宁可多一个空格，也不能让英文单词粘连。
+/// 3. 间隙小于 [`Profile::space_em`] 倍字号（0.1 em）：是字距微调或同词拆分，不补；
+/// 4. 其余情况补一个空格——真实空格的实测下限是 0.18 em，宁可多一个空格，
+///    也不能让英文单词粘连（`Documentationrequirements`、`memcpy` 就是这么坏掉的）。
 pub(crate) fn needs_space(
     left: &PlacedWord,
     right: &PlacedWord,
@@ -198,14 +199,11 @@ pub(crate) fn needs_space(
         return false;
     }
     let gap = right.x0 - left.x1;
-    // 数字 token 被拆开（`117.` + `95%`、`1` + `31.30%`、`77.6` + `6%`）时，
-    // 拼接不需要空格：一个数值内部不可能有词间空格，而间隙小到触发拆分的场合
-    // 必然是同一 token 的碎片。
+    // 数值 token 的紧拼优先于「跨段必分开」：被拆开的数值（`77.6`+`6%`、
+    // `1`+`31.30%`）常来自不同绘制段，按跨段规则会永远拼不回去；而两个独立
+    // 数值之间的分隔至少是一个空格宽。这里返回「按通用阈值补空格」的结果。
     if is_numeric_token(&left.text) && is_numeric_token(&right.text) {
-        // 只重连「被拆开的同一数值」：拆分处的间隙不足十分之一个字宽
-        // （实测 demo2 页 194：`117.`+`95%` 间隙 0.13pt），而真正相邻的两个
-        // 数值间隙 ≥ 0.25 em。用 0.1 em 作分界，避免把两个独立数值粘成一个。
-        return gap >= 0.1 * em;
+        return gap >= profile.space_em * em;
     }
     if left.sequence != right.sequence && gap >= 0.0 {
         // 例外：同一个词被拆到两个段（两端对齐时常见，如 `standa`+`rd`）。
@@ -354,10 +352,17 @@ mod tests {
             em,
             &p
         ));
-        // 紧排且同段：小于 0.25 em 不补。
+        // 0.05 em 的同词拆分：必须紧拼（Hyper-Pipelining 的 `0 .64`、`m em cpy`）。
         assert!(!needs_space(
-            &w("have", 0.0, 25.0, 1),
-            &w("multiple", 27.0, 70.0, 1),
+            &w("0", 0.0, 5.5, 1),
+            &w(".64", 6.0, 18.0, 1),
+            em,
+            &p
+        ));
+        // 0.18 em 的真实空格：必须补（EBA-RTS 的 2pt 词间距）。
+        assert!(needs_space(
+            &w("Documentation", 0.0, 95.0, 1),
+            &w("requirements", 97.0, 160.0, 1),
             em,
             &p
         ));

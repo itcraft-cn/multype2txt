@@ -76,10 +76,14 @@ pub(crate) struct Profile {
 
     /// 词间补空格的阈值，单位 em。
     ///
-    /// 来源：排版常识。西文空格字宽约 0.25 em，两端对齐会拉伸到数 em，但不小于
-    /// 一个空格；低于该值只能是字距微调或紧排。中文之间不补空格（见
-    /// [`super::word::needs_space`]），因为中文没有词间分隔符，补空格等于凭空
-    /// 制造词边界。
+    /// 来源：实测分布。词流里的相邻词只有两种来源：**真正的空格**（西文 0.18~
+    /// 2.0 em，两端对齐会拉宽）与**同一个词被拆成两段**（紧排/字距微调，≤0.05 em，
+    /// 实测 Hyper-Pipelining 的 `0 .64`、`m em cpy`，EBA-RTS 的 2pt 空格为 0.18 em）。
+    /// 两类之间没有重叠区，取 0.1 em 作分界：小于它必是拆词，大于它必是空格。
+    /// 宁可多一个空格，也不能让单词粘连（`Documentationrequirements` 就是粘连）。
+    ///
+    /// 中文之间不补空格（见 [`super::word::needs_space`]），因为中文没有词间
+    /// 分隔符，补空格等于凭空制造词边界。
     pub space_em: f32,
 }
 
@@ -94,7 +98,7 @@ impl Default for Profile {
             interval_tolerance_em: 0.15,
             min_column_rows: 2,
             min_block_rows: 2,
-            space_em: 0.25,
+            space_em: 0.1,
         }
     }
 }
