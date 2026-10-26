@@ -20,7 +20,7 @@
 | doc/docx | Markdown | 图片留占位符，有描述则填入占位符 |
 | xls/xlsx | CSV，必须全量 | 图片完全忽略、不留占位符 |
 | ppt/pptx | 结构 + 文字，仅此而已 | 不碰图 |
-| pdf | 纯文本 | 无结构可还原，`-f markdown/csv` 一律报错；`--images-dir` 可按页导出图片 |
+| pdf | 纯文本 | 无 Markdown 结构，`-f markdown/csv` 一律报错；表格按坐标几何重建为对齐的纯文本网格（判定链与边界见 `pdf_table` 模块文档）；`--images-dir` 可按页导出图片 |
 
 **图我们不碰，这是本工具的明确局限。** `--images-dir` 可把图片字节另存，
 供具备读图能力的调用方自取，但工具本身绝不解析图片内容。
@@ -66,13 +66,24 @@ src/error.rs           ConvertError
 src/output.rs          OutputFormat / ConvertOptions / ImagePolicy
 src/converter/mod.rs   格式分派与默认输出映射
 src/converter/office.rs
-src/converter/pdf.rs   PDF 文本抽取 + 按页图片导出（页末追加占位符）
+src/converter/pdf.rs   PDF 文本抽取（基线阅读顺序 + 表格页坐标重建）+ 按页图片导出
+src/converter/pdf_table/   PDF 表格重建（坐标几何，判定链见模块文档）
+    mod.rs      编排：归一化 -> 行 -> 区块 -> 列 -> 网格 -> 自检
+    word.rs     词几何归一化（字体度量修正）、显示宽度、词间空格判定
+    lines.rs    行聚类、表格行/正文行切分、目录行识别
+    columns.rs  列检出：一条没有任何词跨越的垂直空白带即列界
+    grid.rs     网格装配、复制源对齐方式、渲染
+    verify.rs   自检：字符守恒 + 行宽有界
+    profile.rs  全部可调量（一律无量纲，逐项注明来源）
+    pages.rs    真实页面测试数据与整篇回归门槛
 src/image.rs           图片落盘公共约定（命名/扩展名魔数/URL 拼接），Office 与 PDF 共用
 src/render/mod.rs      DocumentRenderer trait + 工厂 + 纯文本实现
 src/render/markdown.rs 自研 IR -> Markdown 渲染器
 src/render/grid.rs     SheetSource trait + xlsx/xls 适配 + CSV 序列化
 tests/convert.rs       端到端测试（链路、分派、报错、图片导出）
 examples/structure_probe.rs  结构还原探针（量化 plain_text vs markdown/html 差距）
+examples/pdf_words_probe.rs  词坐标探针 / 测试数据生成器（TSV，见 tests/data/pdf/）
+tests/data/pdf/              真实页面词坐标（由上述 example 生成，供单元测试与回归门槛）
 samples/               样例文档
 ```
 
@@ -100,6 +111,19 @@ samples/               样例文档
   错位，把被污染的单元格伪装成正常内容）。
 - **有序列表按真实序号递增**，相邻同样式片段先合并再包裹强调标记，
   这是自研渲染器而非直接调用库 `to_markdown()` 的根本原因。
+- **PDF 表格重建只依赖无量纲事实，不引入 point 常量**：
+  行 = 垂直投影重叠；表格行 = 行内存在 ≥1 em 的列间空白；区块 = 连续的
+  表格行；列界 = 一条没有任何词跨越、宽度 ≥1 em 的垂直空白带；对齐方式
+  复制源几何（右边缘比左边缘稳定即右对齐），不看内容类型。全部参数集中在
+  `pdf_table/profile.rs`，每项注明来源（字体度量/排版常识/结构定义）。
+  **禁止**再写「间隙 ≥12pt」「连续 ≥3 行」这类为某份样本试出来的阈值。
+- **旋转页靠字体度量纠正，不猜方向**：`pdf_oxide 0.3.73` 在 `/Rotate` 页把
+  词宽写进包围盒高度（5 字词变成 48×53 方块），`word::normalize` 以
+  「行盒高度 ≤ 1.3 em」为界判定高度不可信，保留下沿按字号重算。旋转因此
+  不再需要方向识别，也不会退化成一行巨串。
+- **自检是硬门槛**：`verify` 要求重建后字符守恒、行宽不超过物理上界；
+  `pdf.rs` 另做跨路径检查（重建不得比基线少字）。失败一律回退基线并记
+  warn，绝不输出半成品。
 - **PDF 图片走 `page_image_handles` 而非 `extract_images`**：后者对内联图
   （`BI...ID...EI`）未补 `/Subtype` 会报错并被底层吞掉，整页表现为无图。
   页对齐依赖 `extract_all_text` 的分段数恒等于 `page_count`（Rust 字面量

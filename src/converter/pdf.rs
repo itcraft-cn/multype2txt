@@ -1,8 +1,15 @@
 //! PDF 文档转纯文本，可选按页导出图片。
 //!
-//! 使用 [`pdf_oxide::PdfDocument::extract_all_text`] 一次性抽取全部页面。
-//! 该接口按 `0..page_count` 逐页读取阅读顺序，并在页与页之间插入换页符
-//! (`U+000C`)，既保留分页边界，又不会向正文混入可见的标记文本。
+//! # 文本抽取的双路径
+//!
+//! 基线走 [`pdf_oxide::PdfDocument::extract_all_text`]：按 `0..page_count`
+//! 逐页读取阅读顺序，在页与页之间插入换页符 (`U+000C`)，保留分页边界。
+//!
+//! 但阅读顺序流会丢弃词坐标，无边框表格（密集数字矩阵）的行列结构因此
+//! 错乱为逐词流水。为此本模块逐页再走 [`pdf_oxide::PdfDocument::extract_words`]
+//! 坐标路径，交给 [`pdf_table`] 做行列聚类：**检出表格的页**按坐标整页重建
+//! （表格还原为对齐的纯文本网格），**未检出的页**仍用基线文本——把坐标
+//! 重建的回归面限制在表格页内。详见 [`pdf_table`] 模块文档。
 //!
 //! # 图片
 //!
@@ -25,6 +32,7 @@ use std::path::Path;
 
 use pdf_oxide::extractors::{ImageData, PdfImage};
 
+use crate::converter::pdf_table;
 use crate::error::ConvertError;
 use crate::image::{ensure_dir, join_url, png_file_name, write_image_bytes};
 use crate::output::{ConvertOptions, ImagePolicy};
@@ -51,13 +59,85 @@ const FEED: &str = "\x0C";
 /// [`ConvertError::ImageExport`]（图片导出失败）。
 pub fn extract(path: &Path, options: &ConvertOptions) -> Result<String, ConvertError> {
     let document = pdf_oxide::PdfDocument::open(path)?;
-    let text = document.extract_all_text()?;
+    let text = extract_text_with_tables(&document)?;
 
     match options.image_policy() {
         ImagePolicy::Export { dir, url_prefix } => {
             export_page_images(&document, text, &dir, &url_prefix)
         }
         ImagePolicy::Virtual | ImagePolicy::Suppress => Ok(text),
+    }
+}
+
+/// 抽取全文文本：基线逐页走阅读顺序流，检出表格的页用坐标重建。
+///
+/// 基线解析失败仍按 [`ConvertError::Pdf`] 传播（整篇不可读时不产出残缺结果）；
+/// 单页的坐标抽取失败只记 warn 日志并回退该页基线文本——单页降级不该让
+/// 整篇转换失败（基线文本仍是完整信息，只是该页表格行列错乱）。页边界仍由
+/// 基线的换页符切分给出，坐标重建只替换页内文本，不改页数。
+fn extract_text_with_tables(document: &pdf_oxide::PdfDocument) -> Result<String, ConvertError> {
+    let text = document.extract_all_text()?;
+    let baseline_pages: Vec<&str> = text.split(FEED).collect();
+
+    let mut rebuilt: Vec<String> = Vec::with_capacity(baseline_pages.len());
+    for (index, baseline) in baseline_pages.iter().enumerate() {
+        rebuilt.push(rebuild_page_text(document, index, baseline));
+    }
+    Ok(rebuilt.join(FEED))
+}
+
+/// 重建单页文本：坐标路径检出表格则用重建结果，否则沿用基线。
+///
+/// 这里只做类型适配：把底层的词包围盒与字号交给 `pdf_table`，几何判断与容错
+/// 全部在那边完成。单页坐标抽取失败只记 warn 并回退该页基线——单页降级不该让
+/// 整篇转换失败（基线文本仍是完整信息，只是该页表格行列错乱）。
+fn rebuild_page_text(
+    document: &pdf_oxide::PdfDocument,
+    page_index: usize,
+    baseline: &str,
+) -> String {
+    let words = match document.extract_words(page_index) {
+        Ok(words) => words,
+        Err(error) => {
+            log::warn!(
+                "第 {} 页词坐标抽取失败，回退基线文本: {error}",
+                page_index + 1
+            );
+            return baseline.to_string();
+        }
+    };
+    let input: Vec<pdf_table::RawWord> = words
+        .iter()
+        .map(|word| {
+            let bbox = word.bbox;
+            pdf_table::RawWord {
+                text: word.text.clone(),
+                x0: bbox.x,
+                y0: bbox.y,
+                x1: bbox.x + bbox.width,
+                y1: bbox.y + bbox.height,
+                font_size: word.avg_font_size,
+                sequence: word.sequence,
+            }
+        })
+        .collect();
+    match pdf_table::rebuild_page(input) {
+        Some(rebuilt) => {
+            // 页面级一致性：重建可以改变顺序、可以多出页脚页码，但绝不能少字。
+            // 两条抽取路径偶尔给出不同的字符集合，缺字的页一律以基线为准。
+            if pdf_table::verify::covers_baseline(baseline, &rebuilt) {
+                rebuilt
+            } else {
+                let (missing, missing_sample, extra, extra_sample) =
+                    pdf_table::verify::char_diff(baseline, &rebuilt);
+                log::warn!(
+                    "第 {} 页重建结果与基线字符集合不一致（缺 {missing} 如 {missing_sample:?}，多 {extra} 如 {extra_sample:?}），回退基线文本",
+                    page_index + 1
+                );
+                baseline.to_string()
+            }
+        }
+        None => baseline.to_string(),
     }
 }
 

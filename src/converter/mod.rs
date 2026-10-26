@@ -16,6 +16,9 @@
 pub mod office;
 pub mod pdf;
 
+/// PDF 表格重建（坐标几何），仅供 [`pdf`] 内部使用，不对外暴露。
+mod pdf_table;
+
 use std::path::Path;
 
 use crate::error::ConvertError;
