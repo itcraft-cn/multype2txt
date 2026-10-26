@@ -1,6 +1,6 @@
 [package]
 name = "multype2txt"
-version = "0.3.0-dev" # managed by updgitver
+version = "0.3.0" # managed by updgitver
 edition = "2021"
 exclude = ["samples"]
 authors = ["Helly Guo <hellyguo@foxmail.com>"]
