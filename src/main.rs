@@ -77,6 +77,12 @@ struct Cli {
     )]
     format: String,
 
+    /// PDF 表格重建：auto（默认）/ off（一律输出线性阅读顺序）
+    ///
+    /// 表格重建是启发式的；关键数值文档若希望零重排，用 off 明确退回旧行为。
+    #[arg(long = "pdf-tables", value_name = "MODE", default_value = "auto")]
+    pdf_tables: String,
+
     /// 把图片字节导出到该目录，占位符 URL 指向实际文件（仅 Markdown 输出有效）
     #[arg(long = "images-dir", value_name = "DIR")]
     images_dir: Option<PathBuf>,
@@ -310,6 +316,10 @@ fn build_options(cli: &Cli) -> anyhow::Result<ConvertOptions> {
     if let Some(format) = requested {
         options = options.with_format(format);
     }
+
+    let strategy = multype2txt::TableRebuild::parse(&cli.pdf_tables)
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+    options = options.with_tables(strategy);
 
     if let Some(dir) = &cli.images_dir {
         options = options.with_images(ImagePolicy::Export {

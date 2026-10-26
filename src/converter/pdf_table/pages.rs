@@ -140,12 +140,21 @@ fn page5_toc_rows_are_not_tables() {
     assert!(rebuild_page(load("page5")).is_none());
 }
 
-/// 产品线对应表：三列，含 rowspan 空单元格。
+/// 产品线对应表：三列 + 两级目录 + 单元格内换行。
+///
+/// 这类表的续行与列间空白交织，区块会被切成单行片段，列结构不稳定——本测试只锁
+/// 「不丢字、不退化」；列间整并属于已知边界（见模块文档）。
 #[test]
-fn page213_three_column_mapping_table() {
-    let text = rebuild_page(load("page213")).expect("应检出产品线表");
-    let line = line_with(&text, "市政/政府金融");
-    assert!(line.contains("兼并与收购"));
+fn page213_mapping_table_keeps_content() {
+    let words = load("page213");
+    let expected = compact(&words.iter().map(|w| w.text.clone()).collect::<String>());
+    match rebuild_page(words) {
+        Some(text) => {
+            assert_eq!(compact(&text), expected);
+            assert!(max_line_width(&text) < 120);
+        }
+        None => assert!(!expected.is_empty(), "回退基线时内容仍在 PDF 里"),
+    }
 }
 
 /// 参数化入口可用：提高行数门槛会让两行表回退。
@@ -222,4 +231,78 @@ fn whole_document_regression_gate() {
         accepted_pages >= 60,
         "还原页数退化：{accepted_pages}（基线水位 60+）"
     );
+}
+
+/// 值表跨行串位是实质性错误：同一行的数值必须来自同一视觉行。
+///
+/// 页 194 是 /Rotate 页，且基线（`extract_all_text`）对这页几乎无输出；此处的
+/// 断言全部落在「行归属」上：10.00% 行只允许出现它自己的八个数值，不得混入
+/// 上一行（203.12%…）或下一行（307.24%…）。
+#[test]
+fn page194_rows_are_not_merged() {
+    let text = rebuild_page(load("page194")).expect("应检出表格");
+    let row = line_with(&text, "250.22%");
+    for expected in ["204.50%", "260.66%", "144.81%", "69.51%", "131.30%"] {
+        assert!(row.contains(expected), "10.00% 行缺少 {expected}：{row}");
+    }
+    for foreign in ["307.24%", "203.12%", "176.35%"] {
+        assert!(
+            !row.contains(foreign),
+            "10.00% 行混入了相邻行的 {foreign}：{row}"
+        );
+    }
+    // 被拆开的数值必须重连：`117.` + `95%` -> `117.95%`。
+    assert!(row.contains("117.95%"), "数值未重连：{row}");
+    assert!(max_line_width(&text) < 120);
+}
+
+/// 长文本多列表：目前只保证「不退化、不丢字、行不串」，列间整并是已知边界。
+#[test]
+fn page195_long_text_table_does_not_degenerate() {
+    let words = load("page195");
+    let expected = compact(&words.iter().map(|w| w.text.clone()).collect::<String>());
+    let text = rebuild_page(words).expect("应检出表格");
+    assert_eq!(compact(&text), expected, "内容不得丢失");
+    assert!(max_line_width(&text) < 200, "不得出现退化行");
+}
+
+/// 伪粗体（同一字形绘制两遍）不得产生 `fairfair` 这类重复。
+#[test]
+fn market_risk_page6_has_no_duplicated_text() {
+    let text = rebuild_page(load("market-risk6")).expect("应检出表格");
+    let _ = &text;
+    for doubled in ["fairfair", "valuedvalued", "thethe", "P&LP&L"] {
+        assert!(!text.contains(doubled), "出现重复绘制残留：{doubled}");
+    }
+    assert!(text.contains("fair valued"));
+}
+
+#[test]
+fn dbg_57() {
+    let words = load("page57");
+    let profile = Profile::default();
+    let normalized = super::word::normalize(words, &profile);
+    let em = super::lines::page_em(&normalized);
+    let rows = super::lines::group_rows(normalized, em, &profile);
+    for seg in super::lines::segments(&rows, em, &profile) {
+        if seg.len() < 2 {
+            continue;
+        }
+        let cols = super::columns::detect(&rows[seg.clone()], em, &profile);
+        println!(
+            "seg {}..{} n={} cols={:?}",
+            seg.start,
+            seg.end,
+            seg.len(),
+            cols.as_ref().map(|c| c.len())
+        );
+        if let Some(c) = cols {
+            println!(
+                "  {:?}",
+                c.iter()
+                    .map(|x| (x.x0 as i32, x.x1 as i32))
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
 }

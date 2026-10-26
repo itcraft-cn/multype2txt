@@ -49,6 +49,20 @@ fn converts_pdf() {
     assert_converts("demo.pdf");
 }
 
+/// `--pdf-tables=off` 必须退回线性文本：表格行不再对齐成一行。
+#[test]
+fn pdf_tables_off_restores_linear_text() {
+    let options = ConvertOptions::new().with_tables(multype2txt::TableRebuild::Off);
+    let text = convert_with(&sample("demo2.pdf"), &options).expect("转换 demo2.pdf");
+    assert_eq!(text.split('\u{c}').count(), 232);
+    assert!(
+        !text
+            .lines()
+            .any(|line| line.contains("200 及200以上") && line.contains("3.0")),
+        "关闭重建后不应出现对齐的表格行"
+    );
+}
+
 /// 表格重建的产品契约：整篇不漏页、不出现退化行、表格内容可读。
 ///
 /// 只断言结构性质，不比对整段文本——底层库换行微调不应让这条测试变红。

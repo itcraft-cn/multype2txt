@@ -82,7 +82,58 @@ pub(crate) fn normalize(raw: Vec<RawWord>, profile: &Profile) -> Vec<PlacedWord>
         }
         words.push(word);
     }
+    deduplicate(&mut words);
     words
+}
+
+/// 同一位置重复绘制的词只保留一份。
+///
+/// PDF 里「伪粗体」用同一字形画两遍（第二遍常有亚 point 偏移），部分生成器还会
+/// 为了强调再叠一次；词路径会把它们都取出来，直接拼接就成了 `fairfair`。判据是
+/// **文本相同且包围盒几乎重合**——位置不同的相同词（表格里重复出现的关键字）不受
+/// 影响。
+fn deduplicate(words: &mut Vec<PlacedWord>) {
+    // 按 (文本, x0) 排序后只需要与相邻候选比较，避免 O(n²)。
+    let mut order: Vec<usize> = (0..words.len()).collect();
+    order.sort_by(|a, b| {
+        words[*a].text.cmp(&words[*b].text).then(
+            words[*a]
+                .x0
+                .partial_cmp(&words[*b].x0)
+                .unwrap_or(std::cmp::Ordering::Equal),
+        )
+    });
+    let mut dropped = vec![false; words.len()];
+    for (position, &index) in order.iter().enumerate() {
+        if dropped[index] {
+            continue;
+        }
+        for &other in order.iter().skip(position + 1) {
+            if words[other].text != words[index].text {
+                break;
+            }
+            if words[other].x0 - words[index].x0 > 1.0 {
+                break;
+            }
+            if overlaps_almost(&words[index], &words[other]) {
+                dropped[other] = true;
+            }
+        }
+    }
+    let mut keep = dropped.iter().map(|d| !d);
+    words.retain(|_| keep.next().unwrap_or(true));
+}
+
+/// 两个词是否几乎完全重合（中心距 < 半个字宽且垂直重叠过半）。
+fn overlaps_almost(left: &PlacedWord, right: &PlacedWord) -> bool {
+    let center_dx = (left.center_x() - right.center_x()).abs();
+    let tolerance = 0.5 * left.font_size.max(right.font_size);
+    if center_dx > tolerance {
+        return false;
+    }
+    let overlap = left.y1.min(right.y1) - left.y0.max(right.y0);
+    let min_height = left.height().min(right.height());
+    overlap > 0.5 * min_height
 }
 
 /// 中位数（会排序传入切片）。
@@ -147,10 +198,48 @@ pub(crate) fn needs_space(
         return false;
     }
     let gap = right.x0 - left.x1;
+    // 数字 token 被拆开（`117.` + `95%`、`1` + `31.30%`、`77.6` + `6%`）时，
+    // 拼接不需要空格：一个数值内部不可能有词间空格，而间隙小到触发拆分的场合
+    // 必然是同一 token 的碎片。
+    if is_numeric_token(&left.text) && is_numeric_token(&right.text) {
+        // 只重连「被拆开的同一数值」：拆分处的间隙不足十分之一个字宽
+        // （实测 demo2 页 194：`117.`+`95%` 间隙 0.13pt），而真正相邻的两个
+        // 数值间隙 ≥ 0.25 em。用 0.1 em 作分界，避免把两个独立数值粘成一个。
+        return gap >= 0.1 * em;
+    }
     if left.sequence != right.sequence && gap >= 0.0 {
+        // 例外：同一个词被拆到两个段（两端对齐时常见，如 `standa`+`rd`）。
+        // 两侧都是小写字母且间隙小于一个空格宽时按续词处理。
+        if gap < profile.space_em * em
+            && left
+                .text
+                .chars()
+                .last()
+                .is_some_and(|c| c.is_ascii_lowercase())
+            && right
+                .text
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_lowercase())
+        {
+            return false;
+        }
         return true;
     }
     gap >= profile.space_em * em
+}
+
+/// 文本是否是纯数值 token（数字、千分位、小数点、百分号、正负号、区间符）。
+pub(crate) fn is_numeric_token(text: &str) -> bool {
+    let mut has_digit = false;
+    for c in text.chars() {
+        match c {
+            '0'..='9' => has_digit = true,
+            '.' | ',' | '%' | '-' | '+' | '−' | '–' | '/' | '(' | ')' | '=' | ' ' => {}
+            _ => return false,
+        }
+    }
+    has_digit
 }
 
 /// 把一行词按 x 升序拼接为文本。

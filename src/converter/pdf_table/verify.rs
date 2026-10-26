@@ -46,19 +46,6 @@ pub(crate) fn check(rows: &[Row], output: &str, columns: usize) -> Result<(), St
     Ok(())
 }
 
-/// 重建结果是否覆盖基线的全部字符（忽略空白与顺序）。
-///
-/// 供调用方做「跨抽取路径」的一致性检查：重建可以改变空白与顺序，可以多出基线
-/// 没取到的字符（实测 `extract_all_text` 不取页脚页码，而词路径会取到），但**绝不
-/// 允许少字**——少字意味着丢数据。
-///
-/// 两条路径偶尔会给出不同字符集合（实测 demo2 页 45/127 基线含重复绘制的评级
-/// 字符串，词路径只有一份），这类分歧由调用方裁决为「回退基线」，不在重建侧猜。
-pub(crate) fn covers_baseline(baseline: &str, rebuilt: &str) -> bool {
-    let (missing, _, _, _) = char_diff(baseline, rebuilt);
-    missing == 0
-}
-
 /// 两段文本的字符多重集差异：`(缺失数, 缺失样张, 溢出数, 溢出样张)`。
 ///
 /// 返回样张而非全量，便于日志里定位问题页而不刷屏。
@@ -167,14 +154,15 @@ mod tests {
         );
     }
 
-    /// 跨路径检查：忽略空白与顺序，允许多出，不允许少字。
+    /// 跨路径差异：缺字与多字都要能统计出来。
     #[test]
-    fn cross_path_check_allows_extras_but_never_missing_chars() {
-        assert!(covers_baseline("区域  数量", "区域\n数量"));
-        assert!(covers_baseline("区域  数量", "数量区域"), "顺序可容忍");
-        assert!(covers_baseline("区域", "区域 11"), "页码等多出的内容可接受");
-        assert!(!covers_baseline("区域 数量", "区域"), "少字必须被拦下");
-        assert!(!covers_baseline("AAA", "AA"));
+    fn char_diff_counts_missing_and_extra() {
+        let (missing, _, extra, _) = char_diff("区域  数量", "数量区域");
+        assert_eq!((missing, extra), (0, 0), "顺序与空白可容忍");
+        let (missing, _, extra, _) = char_diff("区域", "区域 11");
+        assert_eq!((missing, extra), (0, 2), "多出的页码计入 extra");
+        let (missing, _, _, _) = char_diff("区域 数量", "区域");
+        assert_eq!(missing, 2, "少字必须计入 missing");
     }
 
     /// 行宽失控必须被拦下：这正是旧实现在旋转页上输出的 700+ 字符巨串。

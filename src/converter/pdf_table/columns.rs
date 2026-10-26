@@ -35,17 +35,33 @@ impl Column {
 }
 
 /// 检出区块的列结构；不足两列或存在空列时返回 `None`（沿用基线文本）。
+///
+/// 列界 = 一条**没有任何非跨列词跨越**的垂直空白带，宽度 ≥
+/// [`Profile::column_separation_em`] 倍字号。
+///
+/// 「跨列行」需要排除在外：横跨整表的标签行、合并的父级表头会在每一列之间都放
+/// 一个词，若让它参与塑形，整张表会被判成「无列界」。判据是行宽占区块宽度的
+/// 比例（≥ [`Profile::spanning_row`] 即视为跨列行）——这仍然是结构比例，不是
+/// 点数。
 pub(crate) fn detect(rows: &[Row], em: f32, profile: &Profile) -> Option<Vec<Column>> {
     if rows.len() < profile.min_block_rows {
         return None;
     }
+    // 塑形只用多词行：单行只有一个词的「跨列标签」（如「总收益率互换」）会把
+    // 相邻两列连成一片；多词行才携带列间结构。
+    let shaping: Vec<&Row> = rows.iter().filter(|row| row.words.len() >= 2).collect();
+    let shaping: Vec<&Row> = if shaping.len() >= profile.min_column_rows {
+        shaping
+    } else {
+        rows.iter().collect()
+    };
+
     let tolerance = profile.interval_tolerance_em * em;
-    let mut intervals: Vec<(f32, f32)> = rows
+    let mut intervals: Vec<(f32, f32)> = shaping
         .iter()
         .flat_map(|row| row.words.iter().map(|w| (w.x0, w.x1)))
         .collect();
     intervals.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-
     let mut occupied: Vec<(f32, f32)> = Vec::new();
     for (x0, x1) in intervals {
         match occupied.last_mut() {
@@ -62,7 +78,11 @@ pub(crate) fn detect(rows: &[Row], em: f32, profile: &Profile) -> Option<Vec<Col
     let mut left = occupied[0].0;
     for pair in occupied.windows(2) {
         let (gutter_x0, gutter_x1) = (pair[0].1, pair[1].0);
-        if gutter_x1 - gutter_x0 < min_gap || has_crossing_word(rows, gutter_x0, gutter_x1) {
+        if gutter_x1 - gutter_x0 < min_gap {
+            continue;
+        }
+        // 少数行跨越（跨列标签、单元格长文本换行）不否决列界：按「多数行留空」投票。
+        if support_rate(rows, gutter_x0, gutter_x1) < profile.column_support {
             continue;
         }
         columns.push(Column {
@@ -78,26 +98,100 @@ pub(crate) fn detect(rows: &[Row], em: f32, profile: &Profile) -> Option<Vec<Col
     if columns.len() < 2 {
         return None;
     }
-
     for column in &columns {
-        let populated: Vec<&Row> = rows
+        let populated = rows
             .iter()
             .filter(|row| row.words.iter().any(|w| column.contains(w.center_x())))
-            .collect();
-        if populated.len() < profile.min_column_rows {
+            .count();
+        if populated < profile.min_column_rows {
             return None;
         }
+    }
+    let columns = split_merged_columns(rows, columns, em, profile);
+    if columns.len() < 2 {
+        return None;
     }
     Some(columns)
 }
 
-/// 是否有词跨越给定空白带（严格跨越：完全落在带内或刚好贴边都不算）。
-fn has_crossing_word(rows: &[Row], gutter_x0: f32, gutter_x1: f32) -> bool {
-    rows.iter().any(|row| {
-        row.words
-            .iter()
-            .any(|w| w.x0 < gutter_x1 && w.x1 > gutter_x0)
-    })
+/// 该空白带的支持率：没有词跨越它的行所占比例。
+///
+/// 一票否决太脆：跨列标签行、单元格长文本换行都会在个别行跨越列界。支持率低于
+/// [`Profile::column_support`] 说明多数行都有词落在带内——那不是列界，而是同一列
+/// 的内部空隙。
+fn support_rate(rows: &[Row], gutter_x0: f32, gutter_x1: f32) -> f32 {
+    if rows.is_empty() {
+        return 0.0;
+    }
+    let supported = rows
+        .iter()
+        .filter(|row| {
+            !row.words
+                .iter()
+                .any(|w| w.x0 < gutter_x1 && w.x1 > gutter_x0)
+        })
+        .count();
+    supported as f32 / rows.len() as f32
+}
+
+/// 按「行首 x 的两簇分布」把被并进来的列再切开。
+///
+/// 判据全是结构性的：某个区间内若存在两簇行首（每簇至少 [`Profile::min_column_rows`]
+/// 行、簇间空隙 ≥ [`Profile::column_separation_em`] 倍字号），说明这是两列被并成了
+/// 一个区间，按簇间中点切开。正常的单列不会有两簇——同一列的格首方向一致
+/// （左对齐对齐左缘、右对齐对齐右缘，右对齐列的左缘虽然参差，但不会出现
+/// 「中间空一大段」的双簇）。
+fn split_merged_columns(
+    rows: &[Row],
+    columns: Vec<Column>,
+    em: f32,
+    profile: &Profile,
+) -> Vec<Column> {
+    let mut out: Vec<Column> = Vec::with_capacity(columns.len());
+    for column in columns {
+        let mut starts: Vec<f32> = Vec::new();
+        for row in rows {
+            let mut words: Vec<&super::word::PlacedWord> = row
+                .words
+                .iter()
+                .filter(|w| column.contains(w.center_x()))
+                .collect();
+            words.sort_by(|a, b| a.x0.partial_cmp(&b.x0).unwrap_or(std::cmp::Ordering::Equal));
+            if let Some(first) = words.first() {
+                starts.push(first.x0);
+            }
+        }
+        starts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let mut split: Option<f32> = None;
+        let min_gap = profile.column_separation_em * em;
+        for pair in starts.windows(2) {
+            let (left_count, right_count) = (
+                starts.iter().filter(|x| **x <= pair[0]).count(),
+                starts.iter().filter(|x| **x >= pair[1]).count(),
+            );
+            if pair[1] - pair[0] >= min_gap
+                && left_count >= profile.min_column_rows
+                && right_count >= profile.min_column_rows
+            {
+                split = Some((pair[0] + pair[1]) / 2.0);
+                break;
+            }
+        }
+        match split {
+            Some(boundary) => {
+                out.push(Column {
+                    x0: column.x0,
+                    x1: boundary,
+                });
+                out.push(Column {
+                    x0: boundary,
+                    x1: column.x1,
+                });
+            }
+            None => out.push(column),
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -151,16 +245,31 @@ mod tests {
         assert!(columns[2].contains(410.0));
     }
 
-    /// 有词跨越空白带时该空白带不能成为列界（跨列单元格）。
+    /// 少数行跨越空白带（跨列标签行）不影响列界：按支持率投票，不再一票否决。
     #[test]
-    fn crossing_word_blocks_the_gutter() {
+    fn a_few_crossing_rows_do_not_kill_the_gutter() {
         let profile = Profile::default();
         let rows = vec![
             row(vec![word("甲", 100.0, 110.0), word("乙", 300.0, 310.0)]),
             row(vec![word("跨列标题横跨两列", 100.0, 310.0)]),
             row(vec![word("丙", 100.0, 110.0), word("丁", 300.0, 310.0)]),
+            row(vec![word("戊", 100.0, 110.0), word("己", 300.0, 310.0)]),
+            row(vec![word("庚", 100.0, 110.0), word("辛", 300.0, 310.0)]),
         ];
-        assert!(detect(&rows, 10.0, &profile).is_none(), "跨列词使列不成立");
+        let columns = detect(&rows, 10.0, &profile).expect("多数行支持即可成列");
+        assert_eq!(columns.len(), 2);
+    }
+
+    /// 多数行都被词跨越时，该空白带不是列界。
+    #[test]
+    fn majority_crossing_rows_reject_the_gutter() {
+        let profile = Profile::default();
+        let rows = vec![
+            row(vec![word("甲跨两列的文字", 100.0, 310.0)]),
+            row(vec![word("乙跨两列的文字", 100.0, 310.0)]),
+            row(vec![word("丙", 100.0, 110.0), word("丁", 300.0, 310.0)]),
+        ];
+        assert!(detect(&rows, 10.0, &profile).is_none());
     }
 
     /// 只有一列（无列间空白）时不构成表格。

@@ -19,6 +19,30 @@
 
 use std::path::PathBuf;
 
+/// PDF 表格重建策略。
+///
+/// PDF 的表格重建是启发式的：它把检出表格的页按坐标重排为对齐网格，代价是
+/// 与基线阅读顺序不同。对关键数值文档，使用者可能宁要线性文本也不要任何重排，
+/// 因此提供显式开关——默认 `Auto`，`Off` 完全等价于旧行为。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TableRebuild {
+    /// 检出表格即重建，失败或自检不过回退基线。
+    Auto,
+    /// 关闭重建，PDF 一律输出基线阅读顺序文本。
+    Off,
+}
+
+impl TableRebuild {
+    /// 解析命令行取值，不区分大小写。
+    pub fn parse(name: &str) -> Result<Self, String> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "auto" => Ok(Self::Auto),
+            "off" | "none" => Ok(Self::Off),
+            other => Err(format!("未知的表格重建策略 {other:?}，可用取值: auto, off")),
+        }
+    }
+}
+
 /// 目标输出格式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputFormat {
@@ -124,6 +148,8 @@ pub struct ConvertOptions {
     pub format: Option<OutputFormat>,
     /// 图片处理策略；`None` 等价于 [`ImagePolicy::Virtual`]。
     pub images: Option<ImagePolicy>,
+    /// PDF 表格重建策略；`None` 等价于 [`TableRebuild::Auto`]。
+    pub tables: Option<TableRebuild>,
 }
 
 impl ConvertOptions {
@@ -144,6 +170,17 @@ impl ConvertOptions {
         self
     }
 
+    /// 指定 PDF 表格重建策略。
+    pub fn with_tables(mut self, strategy: TableRebuild) -> Self {
+        self.tables = Some(strategy);
+        self
+    }
+
+    /// 取出表格重建策略，未指定时使用 [`TableRebuild::Auto`]。
+    pub fn table_rebuild(&self) -> TableRebuild {
+        self.tables.unwrap_or(TableRebuild::Auto)
+    }
+
     /// 取出图片策略，未指定时使用 [`ImagePolicy::Virtual`]。
     pub fn image_policy(&self) -> ImagePolicy {
         self.images.clone().unwrap_or_default()
@@ -160,6 +197,20 @@ mod tests {
         assert_eq!(OutputFormat::parse("MD"), Ok(Some(OutputFormat::Markdown)));
         assert_eq!(OutputFormat::parse("text"), Ok(Some(OutputFormat::Text)));
         assert!(OutputFormat::parse("pdf").is_err());
+    }
+
+    #[test]
+    fn parses_table_rebuild_strategy() {
+        assert_eq!(TableRebuild::parse("auto"), Ok(TableRebuild::Auto));
+        assert_eq!(TableRebuild::parse("OFF"), Ok(TableRebuild::Off));
+        assert!(TableRebuild::parse("maybe").is_err());
+        assert_eq!(ConvertOptions::new().table_rebuild(), TableRebuild::Auto);
+        assert_eq!(
+            ConvertOptions::new()
+                .with_tables(TableRebuild::Off)
+                .table_rebuild(),
+            TableRebuild::Off
+        );
     }
 
     #[test]

@@ -32,6 +32,14 @@ pub(crate) struct Profile {
     /// （实测同排词带可错开 7.4pt，重叠仍达 30%）。判定只看相对关系，与字号无关。
     pub row_overlap: f32,
 
+    /// 同一行内各词中心与行中心的允许偏差，单位 em。
+    ///
+    /// 来源：结构定义。行的本质是「同一基线」，用中心距作硬约束，是为了挡住
+    /// 「稀疏行靠垂直重叠被并进上一行」——数值表的相邻行内容极稀疏时，重叠比例
+    /// 判据会失效（实测 demo2 页 194：`81%`/`33%` 从下一行串到上一行，读错数值）。
+    /// 0.4 em 足以容纳上标与列间基线错位，又能分开正常行距（≥1 em）。
+    pub row_center_em: f32,
+
     /// 列间空白下限，单位 em。
     ///
     /// 来源：排版常识。西文词间空格约 0.25 em，整字宽 1 em；两个**列**之间的空白
@@ -44,6 +52,15 @@ pub(crate) struct Profile {
     /// 来源：字体度量。字距微调（Tc/kern）与亚像素取整造成的同列词边缘抖动远小于
     /// 一个字符，取 0.15 em 合并；超过则视为真正的列间空白。
     pub interval_tolerance_em: f32,
+
+    /// 列界成立所需的最小行支持率。
+    ///
+    /// 来源：结构定义。列界是「多数行上无词跨越的垂直空白带」：跨列标签行、
+    /// 单元格长文本换行都会在个别行跨越它，但一票否决会让整条列界消失，把
+    /// 两列并成一列（实测 demo2 页 195 的长文本表因此交错）。取 0.6 即「多数
+    /// 行支持」，与「极少数行跨越」的旧行为相比少了脆性，也不再需要为某份
+    /// 样本挑阈值：低于一半就是「多数行有词」，那本来就不该是列界。
+    pub column_support: f32,
 
     /// 一列成立所需的最少行数。
     ///
@@ -71,7 +88,9 @@ impl Default for Profile {
         Self {
             line_box_em: 1.3,
             row_overlap: 0.2,
+            row_center_em: 0.4,
             column_separation_em: 1.0,
+            column_support: 0.6,
             interval_tolerance_em: 0.15,
             min_column_rows: 2,
             min_block_rows: 2,
@@ -90,8 +109,10 @@ mod tests {
         let p = Profile::default();
         assert!(p.line_box_em > 1.0 && p.line_box_em < 2.0);
         assert!(p.row_overlap > 0.0 && p.row_overlap < 1.0);
+        assert!(p.row_center_em > 0.0 && p.row_center_em < 1.0);
         assert!(p.column_separation_em >= 1.0);
         assert!(p.interval_tolerance_em < p.column_separation_em);
+        assert!(p.column_support > 0.5 && p.column_support < 1.0);
         assert!(p.min_column_rows >= 2);
         assert!(p.min_block_rows >= 2);
         assert!(p.space_em > 0.0 && p.space_em < p.column_separation_em);

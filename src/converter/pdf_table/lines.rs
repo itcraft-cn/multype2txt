@@ -47,7 +47,8 @@ impl Row {
 /// 贪心分配：按 y1 从大到小（页面自上而下）扫描，词与已有行带的垂直重叠达到
 /// [`Profile::row_overlap`] 倍较小高度时并入该行，否则开新行；行带随并入扩张。
 /// 从最近建立的行往回找，是因为相邻行在 y 上必然最接近。
-pub(crate) fn group_rows(mut words: Vec<PlacedWord>, profile: &Profile) -> Vec<Row> {
+pub(crate) fn group_rows(mut words: Vec<PlacedWord>, em: f32, profile: &Profile) -> Vec<Row> {
+    let center_tolerance = profile.row_center_em * em;
     words.sort_by(|a, b| {
         b.y1.partial_cmp(&a.y1)
             .unwrap_or(std::cmp::Ordering::Equal)
@@ -61,7 +62,20 @@ pub(crate) fn group_rows(mut words: Vec<PlacedWord>, profile: &Profile) -> Vec<R
             let row = &rows[index];
             let overlap = row.y1.min(word.y1) - row.y0.max(word.y0);
             let min_height = (row.y1 - row.y0).min(word.height());
-            if overlap >= profile.row_overlap * min_height {
+            // 两个条件：
+            // 1. 垂直投影有重叠——容纳上标、列间基线偏移；
+            // 2. 不与行内已有词「占同一列却没有同一基线」。稀疏数值表里，相邻行的
+            //    数字在 x 上紧挨着（间隙 < 1 em）、基线却差一整行，只靠重叠判据会
+            //    被并进上一行，读出来的数值是错的（实测 demo2 页 194）。跨行合并
+            //    单元格（标签垂直居中）不受影响：它与本行各列 x 相距 ≥1 em。
+            if overlap >= profile.row_overlap * min_height
+                && !conflicts(
+                    row,
+                    &word,
+                    center_tolerance,
+                    profile.column_separation_em * em,
+                )
+            {
                 hit = Some(index);
                 break;
             }
@@ -95,14 +109,24 @@ pub(crate) fn group_rows(mut words: Vec<PlacedWord>, profile: &Profile) -> Vec<R
     rows
 }
 
+/// 词与行内已有词是否「同列但不同基线」。
+///
+/// 同列 = 水平间隙小于列间空白下限；不同基线 = 中心差超过容差。两个条件同时成立
+/// 时，该词属于另一行，不能并进来。
+fn conflicts(row: &Row, word: &PlacedWord, center_tolerance: f32, column_gap: f32) -> bool {
+    let center = (word.y1 + word.y0) / 2.0;
+    row.words.iter().any(|existing| {
+        let gap = (word.x0 - existing.x1).max(existing.x0 - word.x1);
+        let existing_center = (existing.y1 + existing.y0) / 2.0;
+        gap < column_gap && (center - existing_center).abs() > center_tolerance
+    })
+}
+
 /// 页面字号的代表值：全页词字号的中位数。
 ///
 /// 用中位数而非均值：脚注、页码、上标会把均值拉偏。
-pub(crate) fn page_em(rows: &[Row]) -> f32 {
-    let mut sizes: Vec<f32> = rows
-        .iter()
-        .flat_map(|r| r.words.iter().map(|w| w.font_size))
-        .collect();
+pub(crate) fn page_em(words: &[PlacedWord]) -> f32 {
+    let mut sizes: Vec<f32> = words.iter().map(|w| w.font_size).collect();
     super::word::median(&mut sizes)
 }
 
@@ -183,7 +207,7 @@ mod tests {
             word("行账户资本要求的规定是一致的", 70.0, 709.9, 238.9, 721.9),
             word("96", 238.9, 713.9, 246.9, 721.9),
         ];
-        let rows = group_rows(words, &profile);
+        let rows = group_rows(words, 10.0, &profile);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].words.len(), 2);
     }
@@ -196,7 +220,7 @@ mod tests {
             word("上一行", 70.0, 700.0, 120.0, 712.0),
             word("下一行", 70.0, 680.0, 120.0, 692.0),
         ];
-        assert_eq!(group_rows(words, &profile).len(), 2);
+        assert_eq!(group_rows(words, 10.0, &profile).len(), 2);
     }
 
     /// 行内大间隙（列间空白）与行内小间隙（正文）分别切出表格区块与正文区块。

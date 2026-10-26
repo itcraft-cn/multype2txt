@@ -68,12 +68,12 @@ pub(crate) fn rebuild_with(input: Vec<RawWord>, profile: &Profile) -> Option<Str
     if words.is_empty() {
         return None;
     }
-    let rows = lines::group_rows(words, profile);
-    if rows.is_empty() {
+    let em = lines::page_em(&words);
+    if em <= 0.0 {
         return None;
     }
-    let em = lines::page_em(&rows);
-    if em <= 0.0 {
+    let rows = lines::group_rows(words, em, profile);
+    if rows.is_empty() {
         return None;
     }
     // 目录页整页按正文输出：引导线行占到三分之一以上，说明这页是目录，

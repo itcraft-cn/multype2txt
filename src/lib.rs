@@ -44,4 +44,4 @@ pub mod render;
 
 pub use converter::{convert_file, convert_with, is_supported, SUPPORTED_EXTENSIONS};
 pub use error::ConvertError;
-pub use output::{ConvertOptions, ImagePolicy, OutputFormat};
+pub use output::{ConvertOptions, ImagePolicy, OutputFormat, TableRebuild};

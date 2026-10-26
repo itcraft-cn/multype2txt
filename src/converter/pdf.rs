@@ -59,7 +59,10 @@ const FEED: &str = "\x0C";
 /// [`ConvertError::ImageExport`]（图片导出失败）。
 pub fn extract(path: &Path, options: &ConvertOptions) -> Result<String, ConvertError> {
     let document = pdf_oxide::PdfDocument::open(path)?;
-    let text = extract_text_with_tables(&document)?;
+    let text = match options.table_rebuild() {
+        crate::output::TableRebuild::Auto => extract_text_with_tables(&document)?,
+        crate::output::TableRebuild::Off => document.extract_all_text()?,
+    };
 
     match options.image_policy() {
         ImagePolicy::Export { dir, url_prefix } => {
@@ -125,13 +128,24 @@ fn rebuild_page_text(
         Some(rebuilt) => {
             // 页面级一致性：重建可以改变顺序、可以多出页脚页码，但绝不能少字。
             // 两条抽取路径偶尔给出不同的字符集合，缺字的页一律以基线为准。
-            if pdf_table::verify::covers_baseline(baseline, &rebuilt) {
+            let (missing, _, extra, _) = pdf_table::verify::char_diff(baseline, &rebuilt);
+            // 多出的字符设比例上限，作为「整段重复绘制」的报警口：伪粗体（同一字形
+            // 画两遍）会让文字成倍出现，正常页只多出页脚页码（1~3 个）。
+            //
+            // 上限取 20% 而非 1%：`extract_all_text` 会漏掉一部分词路径能取到的
+            // 文字（实测 market-risk 136 页文档每页多 40 个字符，全是页眉字母），
+            // 1% 的闸门把该文档 62 页的表格全部挡回，收益被误伤吞掉。真正的
+            // 「重复绘制」由 `word::deduplicate` 在源头收敛，这里只兜底成倍复制的
+            // 病态页。
+            let baseline_chars = baseline.chars().filter(|c| !c.is_whitespace()).count();
+            let extra_limit = (baseline_chars / 5).max(20);
+            if missing == 0 && extra <= extra_limit {
                 rebuilt
             } else {
-                let (missing, missing_sample, extra, extra_sample) =
+                let (_, missing_sample, _, extra_sample) =
                     pdf_table::verify::char_diff(baseline, &rebuilt);
                 log::warn!(
-                    "第 {} 页重建结果与基线字符集合不一致（缺 {missing} 如 {missing_sample:?}，多 {extra} 如 {extra_sample:?}），回退基线文本",
+                    "第 {} 页重建结果与基线字符集合不一致（缺 {missing} 如 {missing_sample:?}，多 {extra} 如 {extra_sample:?}，上限 {extra_limit}），回退基线文本",
                     page_index + 1
                 );
                 baseline.to_string()
