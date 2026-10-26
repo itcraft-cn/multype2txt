@@ -18,12 +18,13 @@
 //!    [`COL_TOL`] 内命中，兼容左对齐文本列、右对齐数字列、居中列）。
 //! 3. **表格区域**：连续 ≥ [`MIN_TABLE_ROWS`] 行成链才算表格——正文首行缩进
 //!    的孤立行、两行定义式不会误判。
-//! 4. **列槽位**：区域内所有词的 x 区间做合并（重叠或间隙 < [`CELL_GAP`]
+//! 4. **列槽位**：区域内所有词的 x 区间做合并（重叠或间隙 < [`SLOT_MERGE_GAP`]
 //!    归并），每个合并区间是一个列槽位；词按中心落入槽位完成网格填充。
 //!    多词单元格（「A+ 至 BBB-」）与漂移的右对齐数字列自然归并。
 //! 5. **渲染**：按显示宽度（CJK=2 列）计算列宽对齐；整列皆为数字/百分比时
 //!    右对齐，其余左对齐。跨行合并单元格（绿区/黄区/红区）表现为下方行的
-//!    空单元格——纯文本无法表达 rowspan，如实留空而不是猜填。
+//!    空单元格——纯文本无法表达 rowspan，如实留空而不是猜填。词间空格由
+//!    [`needs_space`] 按「间隙/字高比 + 边界字符类型」判定，中英皆准。
 //!
 //! # 边界
 //!
@@ -44,17 +45,10 @@ const GAP_FOR_TABLE: f32 = 12.0;
 /// 以上）与上标导致的轻微偏移；超过该值视为不同列。
 const COL_TOL: f32 = 8.0;
 
-/// 词间隙达到该值时拼接一个空格（单元格内与正文行内共用），小于则直接相邻。
-///
-/// CJK 词间隙实测 2.7~3.0pt，「200 及 200 以上」这类多词单元格的词间隙
-/// 2.7~5.3pt，中英混排的真实空格 ≥6pt。取 4pt：保住多词单元格内部的空格，
-/// 又不给 CJK 词间加空格。
-const CELL_GAP: f32 = 4.0;
-
 /// 列槽位归并阈值（point）：词 x 区间间隙小于该值归并进同一列槽位。
 ///
-/// 必须大于 [`CELL_GAP`]——同一单元格内的多词间隙（最大 5.3pt）不能被拆成
-/// 两列；又必须远小于真实列间隙（>30pt）。取 8pt 与列对齐容差一致。
+/// 必须大于单元格内多词间隙（实测最大 5.3pt）——否则「200 及 200 以上」
+/// 会被拆成两列；又必须远小于真实列间隙（>30pt）。取 8pt 与列对齐容差一致。
 const SLOT_MERGE_GAP: f32 = 8.0;
 
 /// 连续多少行满足表格行条件才认定为表格区域。≥3 可排除正文首行缩进、
@@ -135,6 +129,19 @@ impl Row {
             })
         })
     }
+}
+
+/// 跨列标签行/单列续行与上一行的垂直间距上限（point，词带之间的空白）。
+///
+/// 表格内的行距实测 15~26pt（demo2.pdf 页 156：16.4~25.5pt）；正文段落之间的
+/// 空白显著更大（页 58 表格与下一段「152.」之间 44.5pt）。不加此约束时，
+/// 横跨全页的公式行（词多且散，与表格列易有多点巧合对齐）会把紧随其后的
+/// 正文行经由跨列标签判定卷进表格链，公式词再桥接槽位毁掉整个网格。
+const ROW_PROXIMITY: f32 = 25.0;
+
+/// 两行之间的垂直空白（PDF y 轴向上：上行带下沿 − 下行带上沿；重叠时为 0）。
+fn vertical_gap(above: &Row, below: &Row) -> f32 {
+    (above.band_y0 - below.band_y1).max(0.0)
 }
 
 /// 重叠比例阈值：20% 是「同行」与「上下行」的分界——相邻正文行/表格行的
@@ -219,7 +226,10 @@ fn detect_table_regions(rows: &[Row]) -> Vec<std::ops::Range<usize>> {
                             && i >= 2
                             && rows[i].aligns_with(&rows[i - 2]))
                 } else if is_single_column_continuation(&rows[i], region_x0) {
-                    rows[i].aligns_with(&rows[i - 1])
+                    // 单列续行必须紧贴上一行（表格内行距 ≤ [`ROW_PROXIMITY`]）
+                    // 且对齐——版心左缘外的窄正文行（如右侧边注）不满足。
+                    vertical_gap(&rows[i - 1], &rows[i]) <= ROW_PROXIMITY
+                        && rows[i].aligns_with(&rows[i - 1])
                 } else {
                     is_spanning_label_row(rows, i, start)
                 }
@@ -242,16 +252,21 @@ fn detect_table_regions(rows: &[Row]) -> Vec<std::ops::Range<usize>> {
     regions
 }
 
-/// 跨列标签行判定：本行紧凑，且下一行是与链内任一行对齐的多列行。
+/// 跨列标签行判定：本行紧贴链尾（垂直间距 ≤ [`ROW_PROXIMITY`]），且下一行
+/// 也是紧贴本行的多列行，并与链内任一行对齐。
 ///
 /// 标签行自身横跨整表、不与任何单列对齐，只能靠「下一行仍在表格网格中」
-/// 反证它属于表格。下一行必须同时满足多列间隙与链内对齐，避免把正文段落
-/// 的紧凑行（下一行也是正文）误并进来。
+/// 反证它属于表格。垂直邻近约束排除正文段落的紧凑行——公式行词多且散，
+/// 与表格列易有多点巧合对齐，若无垂直约束会把表格与后续正文连成一个区域，
+/// 公式词随后桥接列槽位毁掉整个网格（demo2.pdf 页 58 实测回归）。
 fn is_spanning_label_row(rows: &[Row], i: usize, chain_start: usize) -> bool {
     let Some(next) = rows.get(i + 1) else {
         return false;
     };
-    next.max_gap() >= GAP_FOR_TABLE && rows[chain_start..i].iter().any(|row| next.aligns_with(row))
+    next.max_gap() >= GAP_FOR_TABLE
+        && vertical_gap(&rows[i - 1], &rows[i]) <= ROW_PROXIMITY
+        && vertical_gap(&rows[i], next) <= ROW_PROXIMITY
+        && rows[chain_start..i].iter().any(|row| next.aligns_with(row))
 }
 
 /// 表格区域内的最小词左边界（链首行到当前行之前的全部词）。
@@ -354,7 +369,7 @@ fn slot_index_for(slots: &[ColumnSlot], word: &PlacedWord) -> usize {
 
 /// 渲染表格区域为对齐的纯文本行。
 ///
-/// 每行 = 各列槽位内的词按 x 拼接（间隙 ≥ [`CELL_GAP`] 补一个空格）后按
+/// 每行 = 各列槽位内的词按 x 拼接（[`needs_space`] 决定词间空格）后按
 /// 列宽对齐。数值列右对齐，文本列左对齐；空单元格如实留空（跨行合并的
 /// rowspan 表现为空白）。
 fn render_region(rows: &[Row], region: &std::ops::Range<usize>) -> Vec<String> {
@@ -380,17 +395,19 @@ fn render_region(rows: &[Row], region: &std::ops::Range<usize>) -> Vec<String> {
     let mut grid: Vec<Vec<String>> = Vec::with_capacity(region_rows.len());
     for row in region_rows {
         let mut cells: Vec<String> = vec![String::new(); slots.len()];
-        // 记录每个单元格最后追加词的右边界，用于决定是否补空格。
-        let mut last_x1: Vec<Option<f32>> = vec![None; slots.len()];
+        // 记录每个单元格最后追加的词，用于按间隙+字符类型决定是否补空格。
+        let mut last_word: Vec<Option<&PlacedWord>> = vec![None; slots.len()];
         for word in &row.words {
             let col = slot_index_for(&slots, word);
-            if let Some(prev_x1) = last_x1[col] {
-                if word.x0 - prev_x1 >= CELL_GAP {
+            if let Some(left) = last_word[col] {
+                let gap = word.x0 - left.x1;
+                let height = left.height().max(word.height());
+                if needs_space(&left.text, &word.text, gap, height) {
                     cells[col].push(' ');
                 }
             }
             cells[col].push_str(&word.text);
-            last_x1[col] = Some(word.x1);
+            last_word[col] = Some(word);
         }
         grid.push(cells);
     }
@@ -477,32 +494,60 @@ pub(crate) fn rebuild_page(words: Vec<PlacedWord>) -> Option<String> {
     Some(lines.join("\n"))
 }
 
-/// 渲染一个非表格行：词按 x 升序拼接，间隙 ≥ [`CELL_GAP`] 补一个空格。
+/// 词间隙与字高的比值低于该值视为「词内/紧排」，不补空格。
 ///
-/// CJK 词间隙 2~3pt 不补空格（保持「词组成句」的原貌），中英混排的真实
-/// 空格（≥6pt）补一个空格还原。
+/// 实测依据：CJK 词内间隙 0.22~0.26 倍字高（demo2.pdf：2.7~3.0pt @fs10.5/12），
+/// 英文词间空格约 0.28 倍字高（demo.pdf @fs12: 3.9~4.8pt；@fs9 脚注: ~2.5pt）。
+/// 取 0.26 作为分界——纯距离阈值在中英之间没有安全边界（英文小字的空格比
+/// CJK 大字的词内间隙还小），必须按字高归一化。
+const GAP_RATIO_TIGHT: f32 = 0.26;
+
+/// 词拼接时判断是否补一个空格。
+///
+/// 三段式判定：
+///
+/// 1. 间隙 < 0.26×字高：词内切分残片或紧排（CJK 词间、数字与 CJK 紧贴、
+///    下标紧贴基字），不补；
+/// 2. 其余情况补空格——英文词粘连（`havemultipleinterfaces`）比多出空格
+///    严重得多；
+/// 3. **例外**：两侧边界字符都是 CJK 时不补——中文词间无空格是排版惯例，
+///    CJK 之间的大间隙（≥0.26 倍字高）多为标点或版式留白，补空格反而噪
+///    声。真实中英混排空格（0.5 倍字高以上）仍会补上。
+fn needs_space(left_text: &str, right_text: &str, gap: f32, font_height: f32) -> bool {
+    const MIN_HEIGHT: f32 = 1.0;
+    if gap < GAP_RATIO_TIGHT * font_height.max(MIN_HEIGHT) {
+        return false;
+    }
+    let left_cjk = left_text.chars().last().is_some_and(is_wide_char);
+    let right_cjk = right_text.chars().next().is_some_and(is_wide_char);
+    !(left_cjk && right_cjk)
+}
+
+/// 渲染一个非表格行：词按 x 升序拼接，按 [`needs_space`] 决定词间空格。
 fn render_prose_row(row: &Row) -> String {
     let mut line = String::new();
-    let mut last_x1: Option<f32> = None;
+    let mut prev: Option<&PlacedWord> = None;
     for word in &row.words {
-        if let Some(prev_x1) = last_x1 {
-            if word.x0 - prev_x1 >= CELL_GAP {
+        if let Some(left) = prev {
+            let gap = word.x0 - left.x1;
+            let height = left.height().max(word.height());
+            if needs_space(&left.text, &word.text, gap, height) {
                 line.push(' ');
             }
         }
         line.push_str(&word.text);
-        last_x1 = Some(word.x1);
+        prev = Some(word);
     }
     line
 }
 
-/// 字符显示宽度：CJK 及全角符号按 2 列计，其余按 1 列。
+/// 字符是否为宽字符（CJK 及全角符号，显示占 2 列）。
 ///
-/// 自实现而非引 `unicode-width` 依赖：对齐场景只需覆盖中日韩宽字符的主要
-/// 码位区间，覆盖不全的后果只是对齐偏差一列，不影响数据正确性。
-fn char_width(c: char) -> usize {
+/// 自实现而非引 `unicode-width` 依赖：对齐与空格判定只需覆盖中日韩宽字符
+/// 的主要码位区间，覆盖不全的后果只是对齐偏差一列，不影响数据正确性。
+fn is_wide_char(c: char) -> bool {
     let cp = c as u32;
-    match cp {
+    matches!(cp,
         0x1100..=0x115F   // 韩文字母
         | 0x2E80..=0x303E // CJK 部首、假名、标点
         | 0x3041..=0x33FF // 假名、注音、CJK 兼容、半角全角
@@ -514,8 +559,15 @@ fn char_width(c: char) -> usize {
         | 0xFE30..=0xFE4F // CJK 兼容形式
         | 0xFF00..=0xFF60 // 全角字符
         | 0xFFE0..=0xFFE6 // 全角符号
-        => 2,
-        _ => 1,
+    )
+}
+
+/// 字符显示宽度：宽字符按 2 列计，其余按 1 列。
+fn char_width(c: char) -> usize {
+    if is_wide_char(c) {
+        2
+    } else {
+        1
     }
 }
 
@@ -570,8 +622,9 @@ mod tests {
         // 行内容完整。
         assert!(rendered[0].contains("区域") && rendered[0].contains("数量"));
         assert!(rendered[1].contains("绿区") && rendered[1].contains("40-59"));
-        // 「无(=1)」在同一单元格内（词间隙 3pt < CELL_GAP，如实相邻不补空格）。
-        assert!(rendered[1].contains("无(=1)"), "实际: {}", rendered[1]);
+        // 「无 (=1)」同一单元格内：间隙 3pt 超过紧排阈值（0.26×10.5≈2.73pt）
+        // 且边界字符非双 CJK，补一个空格——与原版「无 (= 1)」一致。
+        assert!(rendered[1].contains("无 (=1)"), "实际: {}", rendered[1]);
         // 多词单元格「200 及200以上」归并（间隙 5.3/2.7/2.7pt：仅 5.3pt 处补空格，
         // CJK 词间 2.7pt 保持相邻，数据完整无丢失）。
         assert!(
@@ -697,7 +750,7 @@ mod tests {
         assert!(rebuild_page(vec![]).is_none());
     }
 
-    /// 正文行拼接：CJK 词间小间隙（3pt）不补空格，跨词真实空格（≥6pt）补一个。
+    /// 正文行拼接：CJK 小间隙不补空格，真实空格补一个。
     ///
     /// 间隙值取自 demo2.pdf 实测：CJK 词间隙 2.7~3.0pt，中英混排空格 6pt。
     #[test]
@@ -709,5 +762,59 @@ mod tests {
         ];
         let rows = group_rows(words);
         assert_eq!(render_prose_row(&rows[0]), "前一交易日的 VaR值。");
+    }
+
+    /// 英文词间隙（0.28~0.4 倍字高）必须补空格——demo.pdf（fs=12 时间隙
+    /// 3.9~4.8pt）曾因固定 4pt 阈值被粘连成 `havemultipleinterfaces`。
+    ///
+    /// 间隙值取自 demo.pdf 实测；紧排阈值按字高比例（0.26）而非绝对距离，
+    /// 英文小字（fs=9 脚注，空格 ~2.5pt）同样能补上空格。
+    #[test]
+    fn english_word_spacing() {
+        let words = vec![
+            word("have", 86.0, 680.0, 111.8, 668.0),
+            word("multiple", 115.8, 680.0, 161.6, 668.0), // 间隙 4.0pt
+            word("interfaces", 165.6, 680.0, 217.5, 668.0), // 间隙 4.0pt
+        ];
+        let rows = group_rows(words);
+        assert_eq!(render_prose_row(&rows[0]), "have multiple interfaces");
+
+        // fs=9 脚注：英文空格缩至 ~2.5pt，按比例仍超阈值。
+        let footnote = vec![
+            word("see", 100.0, 119.0, 115.0, 110.0),
+            word("Section", 117.5, 119.0, 150.0, 110.0), // 间隙 2.5pt @fs9
+        ];
+        let rows = group_rows(footnote);
+        assert_eq!(render_prose_row(&rows[0]), "see Section");
+    }
+
+    /// 表格与后续正文之间隔大段空白时，正文不得并入表格链——公式行词多且
+    /// 散，与表格列的多点巧合对齐曾把区域扩到公式行，公式词桥接列槽位把
+    /// 整个网格毁成单列（demo2.pdf 页 58 实测回归）。
+    #[test]
+    fn distant_prose_row_stays_out_of_table() {
+        let mut words = vec![
+            // 三列小表（2 行 + 表头）
+            word("区域", 173.0, 698.0, 195.0, 687.0),
+            word("数量", 271.0, 698.0, 302.0, 687.0),
+            word("倍数", 390.0, 698.0, 420.0, 687.0),
+            word("绿区", 174.0, 617.0, 195.0, 606.0),
+            word("40-59", 273.0, 614.0, 300.0, 603.0),
+            word("2.0", 392.0, 614.0, 410.0, 603.0),
+            word("黄区", 174.0, 527.0, 195.0, 516.0),
+            word("140-159", 262.0, 524.0, 300.0, 513.0),
+            word("2.4", 392.0, 524.0, 410.0, 513.0),
+        ];
+        // 表格结束后隔 44.5pt 空白的正文段（首行缩进小标题 + 公式行）。
+        // 公式词刻意与表格列多点对齐（x1 与「倍数」「数量」列对齐）。
+        words.push(word("152.", 70.0, 471.0, 94.0, 459.0));
+        words.push(word("公式", 100.0, 471.0, 130.0, 459.0));
+        words.push(word("E", 82.0, 444.0, 95.0, 432.0));
+        words.push(word("x", 308.0, 444.0, 320.0, 432.0)); // x1=320 与数量列巧合
+        words.push(word("y", 406.0, 444.0, 420.0, 432.0)); // 与倍数列巧合
+        let rows = group_rows(words);
+        let regions = detect_table_regions(&rows);
+        assert_eq!(regions.len(), 1);
+        assert_eq!(regions[0], 0..3, "表格链不得越过段落空白吞并正文行");
     }
 }
