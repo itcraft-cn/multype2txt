@@ -18,7 +18,7 @@ The core purpose is to make these documents easy for AI to read: structure repla
 | `.xlsx` / `.xls` | CSV | **Full** extraction of computed cell values; multiple sheets separated by comment lines; images ignored entirely, no placeholders |
 | `.pptx` | Markdown | Slide pages, titles, list hierarchy, speaker notes; images get placeholders only |
 | `.ppt` | Markdown | **Best effort**: pages and titles kept, list hierarchy fully lost, see above |
-| `.pdf` | Plain text | Body text in reading order, form-feed characters (`U+000C`) between pages; `--images-dir` exports images per page |
+| `.pdf` | Plain text | Body text in reading order; pages with a detected table are rebuilt from word coordinates into an aligned plain-text grid (column-aligned, numeric columns right-aligned); form-feed characters (`U+000C`) between pages; `--images-dir` exports images per page |
 
 Design trade-offs:
 
@@ -108,6 +108,40 @@ libreoffice --headless --convert-to xlsx --outdir out/ dirty.xls
 multype2txt -i out/dirty.xlsx -o dirty.csv
 ```
 
+### PDF table rebuilding
+
+A PDF carries no table semantics, only per-word coordinates. By default
+(`--pdf-tables=auto`) pages with a **detected table** are rebuilt from word
+bounding boxes and font sizes into a column-aligned plain-text grid: numeric
+columns right-aligned, row-spanning cells left empty, column widths taken
+from the source geometry alone. Pages without a detected table keep the
+reading-order baseline word for word, so enabling this never affects body-text
+pages.
+
+The decision chain relies on dimensionless facts only — no point thresholds
+tuned for one particular sample:
+
+| Stage | Criterion |
+|-------|-----------|
+| Rows | vertical projection overlap, plus a "same column, different baseline" constraint that stops sparse numeric tables from bleeding between rows |
+| Table rows | at least one ≥1 em inter-column gap in the row |
+| Blocks | consecutive table rows |
+| Column boundaries | vertical whitespace bands that a majority of rows (≥60%) leave empty, ≥1 em wide, crossed by no word |
+| Alignment | copies the source geometry: a stabler right edge means right-aligned, content type is irrelevant |
+| Self-check | character conservation plus line widths within the physical bound; any failure reverts the whole page to the baseline |
+
+- Rotated pages are corrected through font metrics instead of guessed
+  orientation; pseudo-bold text (the same glyph drawn twice) is deduplicated
+  during normalization; inter-word spacing is split at `0.1 em` — below that
+  it is a split word, and the measured lower bound for a real space is
+  0.18 em.
+- **Never a half-finished result**: if rebuilding or the self-check fails, the
+  whole page reverts to the baseline and a warn log is written.
+
+**Conservative exit**: for critical numeric documents that must not be
+re-flowed, `--pdf-tables=off` disables coordinate rebuilding, producing PDF
+output identical to before the feature existed.
+
 ### PDF image export
 
 PDF defaults to plain text, so images have nowhere to go. `--images-dir` works for PDF: it scans each page's content stream, writes images to disk, and appends the same placeholder style as Markdown output at the **end of that page's text** — a PDF has no heading or list structure to attach placeholders to, and the page end is the only position that neither interrupts the text nor loses page ownership:
@@ -150,7 +184,33 @@ Date,Product,Qty,Amount
 - **`.xls` may produce garbled output**: shared strings misalign across `CONTINUE` boundaries, mixing in NULs and control bytes (30 of 65562 rows measured), and `-f text` is affected too; convert to `.xlsx` first — see [The `.xls` SST defect](#the-xls-sst-defect-garbled-output).
 - **PDF inline images may fail to export**: the underlying library refuses to decode inline images missing `/ColorSpace`, which are annotated `[image N export failed: ...]` instead of written to disk — see [PDF image export](#pdf-image-export).
 - **`.xlsb` is not supported**: the underlying `rxlsb` has data-correctness defects (dropped column numbers, lost formula values); refusing is better than emitting misaligned data.
-- PDF has only a text stream with no structure to restore, so `-f markdown/csv` always errors for PDF.
+- PDF **tables** are restored as an aligned plain-text grid (borderless
+  tables and dense numeric matrices included), but this is still "plain
+  text": no Markdown syntax, and row-spanning cells show up as empty cells on
+  the following rows. So `-f markdown/csv` still errors for PDF.
+- Every PDF table criterion is dimensionless (em multiples of the font size,
+  row ratios, row counts) — no point threshold tuned for one document;
+  rotated pages are corrected through font metrics rather than guessed
+  orientation; inter-word spacing is split at `0.1 em` (below that it is a
+  split word; the measured lower bound for a real space is 0.18 em);
+  pseudo-bold duplicate drawing is deduplicated during normalization.
+  **Known boundaries**: with two header levels of different column counts,
+  alignment only holds at the sub-column level; tables whose cells wrap long
+  text across columns (e.g. an appendix rating table) may still merge
+  columns; two-column body text is restored as a two-column grid; tables
+  spanning pages are not stitched; labels inside diagrams are re-flowed as
+  multi-column structures; on a `/Rotate` page, if the library draws a whole
+  numeric column as one text run, its bounding box is the union of the run
+  and an individual value may land on a neighbouring row (content is never
+  lost, position may shift).
+- Use `--pdf-tables=off` where zero re-flow matters (critical numeric
+  documents): coordinate rebuilding is disabled and PDF output matches
+  exactly what it was before the feature.
+- PDF **formulas are not restored**: superscripts and subscripts are scattered
+  small words in coordinate space, so the rebuilt result may be denser than
+  the reading-order stream yet still unreadable (e.g. a drifting `KIRB`
+  subscript). This is the granularity limit of the underlying word split —
+  no characters are lost, but positions can be locally wrong.
 - Chart data is not exported — charts are "images" and out of scope for this tool.
 
 ## Install & build
@@ -174,7 +234,7 @@ cargo run -- -i samples/demo.docx
 ## Usage
 
 ```text
-multype2txt -i <input> [-o <output>] [-f <format>] [--images-dir <dir>]
+multype2txt -i <input> [-o <output>] [-f <format>] [--pdf-tables <MODE>] [--images-dir <dir>]
 ```
 
 ### Options
@@ -184,6 +244,7 @@ multype2txt -i <input> [-o <output>] [-f <format>] [--images-dir <dir>]
 | `-i, --input <FILE>` | Required. Input document path. |
 | `-o, --output <FILE>` | Optional. Output file path; defaults to standard output. |
 | `-f, --format <FMT>` | Optional. `auto` (default, decided by input type) / `markdown` / `csv` / `text`. |
+| `--pdf-tables <MODE>` | Optional. PDF table rebuilding: `auto` (default) restores table pages from coordinate geometry, `off` always emits linear reading order (identical to before the feature). Has no effect on non-PDF input. |
 | `--images-dir <DIR>` | Optional. Export image bytes to this directory; placeholder URLs point at the actual files. Effective for Markdown output (`.docx` / `.pptx`) and PDF input; has no effect on `.doc` / `.ppt`; errors for CSV output. |
 | `-v, --verbose` | Optional. Also log diagnostics to stderr: `-v` for info, `-vv` for debug. By default (without `-v`) logs go only to the log file at level warn. |
 | `-h, --help` | Print help. |
@@ -232,6 +293,9 @@ multype2txt --images-dir report-imgs -i report.docx -o report.md
 # PDFs export images too, placeholders at the end of each page
 multype2txt --images-dir report-imgs -i report.pdf -o report.txt
 
+# Critical numeric documents that must not be re-flowed: disable PDF table rebuilding
+multype2txt --pdf-tables=off -i report.pdf -o report.txt
+
 # Legacy .doc has weak structure: convert to .docx first (recommended)
 libreoffice --headless --convert-to docx --outdir out/ legacy.doc
 multype2txt -i out/legacy.docx -o legacy.md
@@ -267,15 +331,25 @@ src/
   converter/
     mod.rs             # Dispatch by extension, choose target output format
     office.rs          # Six Office formats -> open document, hand to render layer
-    pdf.rs             # PDF -> plain text
+    pdf.rs             # PDF -> plain text (baseline reading order + coordinate table rebuilding)
+    pdf_table/         # PDF table rebuilding: the coordinate-geometry decision chain
+      mod.rs           #   orchestration: normalize -> rows -> blocks -> columns -> grid -> verify
+      word.rs          #   word geometry normalization (font-metric correction), spacing decision
+      lines.rs         #   row clustering, table/body row split, table-of-contents row detection
+      columns.rs       #   column detection: a vertical whitespace band no word crosses is a column boundary
+      grid.rs          #   grid assembly, alignment copied from source, rendering
+      verify.rs        #   self-check: character conservation + bounded line width
+      profile.rs       #   every tunable (dimensionless, each with its source)
   render/
     mod.rs             # DocumentRenderer trait + renderer factory + plain text impl
     markdown.rs        # Self-written IR -> Markdown renderer
     grid.rs            # SheetSource trait + xlsx/xls grid adapters + CSV serialization
 tests/
   convert.rs           # End-to-end tests against samples/ (pipeline + dispatch + errors + image export)
+  data/pdf/            # Word coordinates of real pages (TSV) for table-rebuild unit tests and regression gates
 examples/
   structure_probe.rs   # Structure probe: quantifies plain-text vs structured output
+  pdf_words_probe.rs   # Word-coordinate probe / test-data generator (TSV, see tests/data/pdf/)
 samples/               # Small sample documents
 ```
 

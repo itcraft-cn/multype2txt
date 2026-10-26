@@ -123,6 +123,32 @@ libreoffice --headless --convert-to xlsx --outdir out/ dirty.xls
 multype2txt -i out/dirty.xlsx -o dirty.csv
 ```
 
+### PDF 的表格重建
+
+PDF 没有表格语义，只有逐词的坐标。默认（`--pdf-tables=auto`）对**检出表格的页**
+用词包围盒与字号重建行列，输出列对齐的纯文本网格：数值列右对齐，跨行合并
+单元格留空，列宽只由源几何决定。未检出表格的页逐字沿用阅读顺序基线，输出与
+以前一致，因此默认开启不会波及正文页。
+
+判定链只依赖无量纲事实，没有为某份样本试出来的 point 阈值：
+
+| 环节 | 判据 |
+|------|------|
+| 行 | 垂直投影重叠；再加「同列不同基线」约束，挡住稀疏数值表的跨行串位 |
+| 表格行 | 行内存在 ≥1 em 的列间空白 |
+| 区块 | 连续的表格行 |
+| 列界 | 多数行（≥60%）留空、宽度 ≥1 em、无任何词跨越的垂直空白带 |
+| 对齐 | 复制源几何：右边缘比左边缘稳定即右对齐，不看内容类型 |
+| 自检 | 字符守恒 + 行宽不超过物理上界；任一不过即整页回退基线 |
+
+- 旋转页靠字体度量纠正高度，不猜方向；伪粗体（同一字形绘制两遍）在归一化
+  阶段去重；词间空格按 `0.1 em` 分界——小于它视为同词被拆，实测真实空格下限
+  为 0.18 em。
+- **绝不输出半成品**：重建或自检失败时整页回退基线并记 warn 日志。
+
+**保守出口**：关键数值文档若希望零重排，用 `--pdf-tables=off` 关闭坐标重建，
+PDF 输出与引入该功能之前完全一致。
+
 ### PDF 的图片导出
 
 PDF 默认输出纯文本，图片没有落点。`--images-dir` 对 PDF 有效：按页扫描内容流
@@ -215,7 +241,7 @@ cargo run -- -i samples/demo.docx
 ## 用法
 
 ```text
-multype2txt -i <输入文件> [-o <输出文件>] [-f <格式>] [--images-dir <目录>]
+multype2txt -i <输入文件> [-o <输出文件>] [-f <格式>] [--pdf-tables <MODE>] [--images-dir <目录>]
 ```
 
 ### 参数
@@ -225,6 +251,7 @@ multype2txt -i <输入文件> [-o <输出文件>] [-f <格式>] [--images-dir <�
 | `-i, --input <FILE>` | 必填。输入文档路径。 |
 | `-o, --output <FILE>` | 可选。输出文件路径；缺省时写入标准输出。 |
 | `-f, --format <FMT>` | 可选。`auto`（默认，按输入类型决定）/ `markdown` / `csv` / `text`。 |
+| `--pdf-tables <MODE>` | 可选。PDF 表格重建：`auto`（默认）按坐标几何还原表格页，`off` 一律输出线性阅读顺序（与引入该功能之前完全一致）。对非 PDF 输入无影响。 |
 | `--images-dir <DIR>` | 可选。把图片字节导出到该目录，占位符 URL 指向实际文件。对 Markdown 输出（`.docx` / `.pptx`）与 PDF 有效；对 `.doc` / `.ppt` 不生效，对 CSV 输出报错。 |
 | `-v, --verbose` | 可选。诊断日志额外输出到 stderr：`-v` 为 info，`-vv` 为 debug。默认（无 `-v`）只写日志文件，级别 warn。 |
 | `-h, --help` | 打印帮助。 |
@@ -268,6 +295,9 @@ multype2txt --images-dir report-imgs -i report.docx -o report.md
 
 # PDF 同样可导出图片，占位符插在对应页末尾
 multype2txt --images-dir report-imgs -i report.pdf -o report.txt
+
+# 关键数值文档要求零重排：关闭 PDF 表格重建，退回线性阅读顺序
+multype2txt --pdf-tables=off -i report.pdf -o report.txt
 
 # legacy .doc 结构弱，先转 .docx 再转换（推荐）
 libreoffice --headless --convert-to docx --outdir out/ legacy.doc
