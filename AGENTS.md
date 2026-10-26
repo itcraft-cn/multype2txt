@@ -20,7 +20,7 @@
 | doc/docx | Markdown | 图片留占位符，有描述则填入占位符 |
 | xls/xlsx | CSV，必须全量 | 图片完全忽略、不留占位符 |
 | ppt/pptx | 结构 + 文字，仅此而已 | 不碰图 |
-| pdf | 纯文本 | 无结构可还原，`-f markdown/csv` 一律报错；`--images-dir` 可按页导出图片 |
+| pdf | 纯文本 | 无 Markdown 结构，`-f markdown/csv` 一律报错；表格按词坐标重建为对齐的纯文本网格；`--images-dir` 可按页导出图片 |
 
 **图我们不碰，这是本工具的明确局限。** `--images-dir` 可把图片字节另存，
 供具备读图能力的调用方自取，但工具本身绝不解析图片内容。
@@ -66,13 +66,15 @@ src/error.rs           ConvertError
 src/output.rs          OutputFormat / ConvertOptions / ImagePolicy
 src/converter/mod.rs   格式分派与默认输出映射
 src/converter/office.rs
-src/converter/pdf.rs   PDF 文本抽取 + 按页图片导出（页末追加占位符）
+src/converter/pdf.rs   PDF 文本抽取（基线阅读顺序 + 表格页坐标重建）+ 按页图片导出
+src/converter/pdf_table.rs  PDF 表格重建：词坐标行聚类、列槽位合并、对齐网格渲染
 src/image.rs           图片落盘公共约定（命名/扩展名魔数/URL 拼接），Office 与 PDF 共用
 src/render/mod.rs      DocumentRenderer trait + 工厂 + 纯文本实现
 src/render/markdown.rs 自研 IR -> Markdown 渲染器
 src/render/grid.rs     SheetSource trait + xlsx/xls 适配 + CSV 序列化
 tests/convert.rs       端到端测试（链路、分派、报错、图片导出）
 examples/structure_probe.rs  结构还原探针（量化 plain_text vs markdown/html 差距）
+examples/pdf_words_probe.rs  PDF 词坐标探针（核对行聚类与列锚点的原始数据）
 samples/               样例文档
 ```
 
@@ -100,6 +102,11 @@ samples/               样例文档
   错位，把被污染的单元格伪装成正常内容）。
 - **有序列表按真实序号递增**，相邻同样式片段先合并再包裹强调标记，
   这是自研渲染器而非直接调用库 `to_markdown()` 的根本原因。
+- **PDF 表格重建只动检出表格的页**（`pdf_table::rebuild_page` 返回 `None`
+  即回退基线），保证非表格页零回归；行判定需「行内间隙 ≥12pt + 相邻行
+  列对齐 + 连续 ≥3 行」三条件，防正文缩进与定义式误判。列槽位只用多列行
+  （≥2 词）的区间塑形——跨列标签行会桥接相邻槽位把两列并成一列。
+  公式不还原：下标是散落小词，词级坐标下位置可能局部漂移（字符不丢）。
 - **PDF 图片走 `page_image_handles` 而非 `extract_images`**：后者对内联图
   （`BI...ID...EI`）未补 `/Subtype` 会报错并被底层吞掉，整页表现为无图。
   页对齐依赖 `extract_all_text` 的分段数恒等于 `page_count`（Rust 字面量

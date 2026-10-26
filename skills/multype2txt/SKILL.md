@@ -25,7 +25,7 @@ description: 用本地二进制将 Office/PDF 文档零 token 消耗地转换为
 | `xls` `xlsx` | CSV | **全量**单元格数据，多工作表以 `# sheet:` 注释行分隔 |
 | `pptx` | Markdown | 幻灯片页、标题、列表层级、演讲者备注，页间以 `---` 分隔 |
 | `ppt` | Markdown | **尽力支持**：页与标题保留，列表层级全部丢失 |
-| `pdf` | 纯文本 | 无结构可还原，`-f markdown/csv` 会直接报错 |
+| `pdf` | 纯文本 | 阅读顺序正文 + 表格按坐标重建为对齐网格，`-f markdown/csv` 会直接报错 |
 
 ## 转换 legacy 格式后，务必提示使用者
 
